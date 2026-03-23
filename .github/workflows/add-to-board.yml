@@ -1,0 +1,15 @@
+name: Add to Project Board
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  add-to-board:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add issue to XomBoard
+        env:
+          GH_TOKEN: ${{ secrets.BOARD_TOKEN }}
+        run: |
+          gh project item-add 2 --owner Xomware --url "${{ github.event.issue.html_url }}"

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "comment": "Track changed files for session memory",
+            "command": "node ~/.claude/hooks/track-changes.js"
+          }
+        ]
+      }
+    ]
+  }
+}
