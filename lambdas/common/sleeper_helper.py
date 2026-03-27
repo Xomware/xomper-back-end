@@ -1,80 +1,78 @@
-import requests
+"""
+XOMPER Sleeper Helper
+=====================
+Synchronous wrappers for the Sleeper.app REST API.
+"""
 
+import requests
+from typing import Any
+
+from lambdas.common.errors import SleeperAPIError
 from lambdas.common.logger import get_logger
 
 log = get_logger(__file__)
+
 SLEEPER_URL_BASE = "https://api.sleeper.app/v1"
 
-def fetch_nfl_players():
+
+def _get(url: str, description: str) -> Any:
+    """
+    Perform a GET request to the Sleeper API.
+
+    Args:
+        url: Full URL to fetch
+        description: Human-readable description for error messages
+
+    Returns:
+        Parsed JSON response
+
+    Raises:
+        SleeperAPIError: On non-200 status or request failure
+    """
     try:
-        url = f"{SLEEPER_URL_BASE}/players/nfl"
-        response = requests.get(url)
-
+        response = requests.get(url, timeout=30)
         if response.status_code == 200:
-            players = response.json()  # JSON is a dict with player IDs as keys
-            return players
-        else:
-            raise Exception(response.status_code)
+            return response.json()
+        raise SleeperAPIError(
+            message=f"{description}: HTTP {response.status_code}",
+            function="_get",
+            endpoint=url,
+        )
+    except SleeperAPIError:
+        raise
     except Exception as err:
-        log.error(f"Error Fetching NFL Players:  {err}")
-        raise Exception(f"Error Fetching NFL Players:  {err}")
-    
-def get_sleeper_user(user_id: str):
-    try:
-        url = f"{SLEEPER_URL_BASE}/user/{user_id}"
-        response = requests.get(url)
+        raise SleeperAPIError(
+            message=f"{description}: {err}",
+            function="_get",
+            endpoint=url,
+        ) from err
 
-        if response.status_code == 200:
-            user = response.json()  # JSON is a dict with player IDs as keys
-            return user
-        else:
-            raise Exception(response.status_code)
-    except Exception as err:
-        log.error(f"Error Getting Sleeper User:  {err}")
-        raise Exception(f"Error Getting Sleeper User:  {err}")
-    
-async def get_sleeper_league(league_id: str):
-    try:
-        url = f"{SLEEPER_URL_BASE}/league/{league_id}"
-        response = requests.get(url)
 
-        if response.status_code == 200:
-            league = response.json()  
-            return league
-        else:
-            raise Exception(response.status_code)
-    except Exception as err:
-        log.error(f"Error Getting League:  {err}")
-        raise Exception(f"Error Getting League:  {err}")
-    
-async def get_sleeper_league_rosters(league_id: str):
-    try:
-        url = f"{SLEEPER_URL_BASE}/league/{league_id}/rosters"
-        response = requests.get(url)
+def fetch_nfl_players() -> dict[str, Any]:
+    """Fetch all NFL players from Sleeper."""
+    url = f"{SLEEPER_URL_BASE}/players/nfl"
+    return _get(url, "Error fetching NFL players")
 
-        if response.status_code == 200:
-            league = response.json()  
-            return league
-        else:
-            raise Exception(response.status_code)
-    except Exception as err:
-        log.error(f"Error Getting League Rosters:  {err}")
-        raise Exception(f"Error Getting League Rosters:  {err}")
-    
-async def get_sleeper_league_users(league_id: str):
-    try:
-        url = f"{SLEEPER_URL_BASE}/league/{league_id}/users"
-        response = requests.get(url)
 
-        if response.status_code == 200:
-            league = response.json()  
-            return league
-        else:
-            raise Exception(response.status_code)
-    except Exception as err:
-        log.error(f"Error Getting League Users:  {err}")
-        raise Exception(f"Error Getting League Users:  {err}")
-    
-def __format_players(players: dict):
-    return [data for player_id, data in players.items()]
+def get_sleeper_user(user_id: str) -> dict[str, Any]:
+    """Get a Sleeper user by ID."""
+    url = f"{SLEEPER_URL_BASE}/user/{user_id}"
+    return _get(url, "Error getting Sleeper user")
 
+
+def get_sleeper_league(league_id: str) -> dict[str, Any]:
+    """Get a Sleeper league by ID."""
+    url = f"{SLEEPER_URL_BASE}/league/{league_id}"
+    return _get(url, "Error getting league")
+
+
+def get_sleeper_league_rosters(league_id: str) -> list[dict[str, Any]]:
+    """Get all rosters for a Sleeper league."""
+    url = f"{SLEEPER_URL_BASE}/league/{league_id}/rosters"
+    return _get(url, "Error getting league rosters")
+
+
+def get_sleeper_league_users(league_id: str) -> list[dict[str, Any]]:
+    """Get all users for a Sleeper league."""
+    url = f"{SLEEPER_URL_BASE}/league/{league_id}/users"
+    return _get(url, "Error getting league users")

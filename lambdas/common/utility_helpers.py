@@ -1,5 +1,5 @@
 """
-XOMIFY Utility Helpers
+XOMPER Utility Helpers
 ======================
 Common utilities for Lambda handlers.
 """
@@ -7,7 +7,7 @@ Common utilities for Lambda handlers.
 import json
 import decimal
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, Set
 
 from lambdas.common.logger import get_logger
@@ -26,9 +26,8 @@ class XomperJSONEncoder(json.JSONEncoder):
     - datetime objects
     - sets
     """
-    def default(self, obj):
+    def default(self, obj: Any) -> Any:
         if isinstance(obj, decimal.Decimal):
-            # Convert to int if whole number, else float
             if obj % 1 == 0:
                 return int(obj)
             return float(obj)
@@ -64,17 +63,17 @@ def parse_body(event: dict) -> dict:
     Handles both API Gateway (string) and direct invocation (dict).
     """
     body = event.get('body')
-    
+
     if body is None:
         return {}
-    
+
     if isinstance(body, str):
         try:
             return json.loads(body)
         except json.JSONDecodeError:
             log.warning("Failed to parse body as JSON")
             return {}
-    
+
     return body if isinstance(body, dict) else {}
 
 
@@ -93,7 +92,7 @@ def get_path_params(event: dict) -> dict:
 # ============================================
 
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": "https://xomper.xomware.com",
     "Access-Control-Allow-Headers": "Content-Type,Authorization,X-Amz-Date,X-Api-Key,X-Amz-Security-Token",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Content-Type": "application/json"
@@ -103,12 +102,12 @@ CORS_HEADERS = {
 def success_response(body: Any, status_code: int = 200, is_api: bool = True) -> dict:
     """
     Build a successful Lambda response.
-    
+
     Args:
         body: Response data (will be JSON encoded if is_api=True)
         status_code: HTTP status code (default 200)
         is_api: If True, JSON encode the body
-        
+
     Returns:
         Lambda response dict
     """
@@ -121,20 +120,20 @@ def success_response(body: Any, status_code: int = 200, is_api: bool = True) -> 
 
 
 def error_response(
-    message: str, 
-    status_code: int = 500, 
+    message: str,
+    status_code: int = 500,
     is_api: bool = True,
     details: Optional[dict] = None
 ) -> dict:
     """
     Build an error Lambda response.
-    
+
     Args:
         message: Error message
         status_code: HTTP status code (default 500)
         is_api: If True, JSON encode the body
         details: Optional additional error details
-        
+
     Returns:
         Lambda response dict
     """
@@ -145,7 +144,7 @@ def error_response(
             **(details or {})
         }
     }
-    
+
     return {
         "statusCode": status_code,
         "headers": CORS_HEADERS,
@@ -159,58 +158,56 @@ def error_response(
 # ============================================
 
 def validate_input(
-    data: Optional[dict], 
-    required_fields: Set[str] = None, 
+    data: Optional[dict],
+    required_fields: Set[str] = None,
     optional_fields: Set[str] = None
 ) -> tuple[bool, Optional[str]]:
     """
     Validate input data has required fields and no extra fields.
-    
+
     Args:
         data: Input dictionary to validate
         required_fields: Set of required field names
         optional_fields: Set of optional field names
-        
+
     Returns:
         Tuple of (is_valid, error_message)
     """
     required_fields = required_fields or set()
     optional_fields = optional_fields or set()
-    
+
     if data is None:
         if required_fields:
             return False, f"Missing required fields: {required_fields}"
         return True, None
-    
+
     if not isinstance(data, dict):
         return False, "Input must be a dictionary"
-    
+
     data_keys = set(data.keys())
     allowed_keys = required_fields | optional_fields
-    
-    # Check for missing required fields
+
     missing = required_fields - data_keys
     if missing:
         return False, f"Missing required fields: {missing}"
-    
-    # Check for extra fields (if optional_fields is specified)
+
     if optional_fields:
         extra = data_keys - allowed_keys
         if extra:
             return False, f"Unexpected fields: {extra}"
-    
+
     return True, None
 
 
 def require_fields(data: dict, *fields: str) -> None:
     """
     Raise ValidationError if any required fields are missing.
-    
+
     Usage:
         require_fields(body, 'email', 'userId')
     """
     from lambdas.common.errors import ValidationError
-    
+
     missing = [f for f in fields if f not in data or data[f] is None]
     if missing:
         raise ValidationError(
@@ -225,18 +222,18 @@ def require_fields(data: dict, *fields: str) -> None:
 
 def get_timestamp() -> str:
     """Get current UTC timestamp in standard format."""
-    return datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def get_iso_timestamp() -> str:
     """Get current UTC timestamp in ISO format."""
-    return datetime.utcnow().isoformat() + 'Z'
+    return datetime.now(timezone.utc).isoformat()
 
 
 def format_date(raw_date: str) -> datetime:
     """Parse MM/DD/YYYY date string to datetime."""
     parts = raw_date.split('/')
-    return datetime(int(parts[2]), int(parts[0]), int(parts[1]))
+    return datetime(int(parts[2]), int(parts[0]), int(parts[1]), tzinfo=timezone.utc)
 
 
 # ============================================
@@ -247,47 +244,3 @@ def encode_credentials(key: str, secret: str) -> str:
     """Base64 encode credentials for Basic Auth."""
     data = f"{key}:{secret}"
     return base64.b64encode(data.encode('utf-8')).decode('utf-8')
-
-
-# ============================================
-# Backward Compatibility
-# ============================================
-# These match your old function names
-
-DecimalEncoder = XomperJSONEncoder
-
-def is_called_from_api(event):
-    return is_api_request(event)
-
-def extract_body_from_event(event, is_api):
-    return parse_body(event)
-
-def build_successful_handler_response(body_object, is_api):
-    return success_response(body_object, is_api=is_api)
-
-def build_error_handler_response(error, is_api=True):
-    """Handle old-style error string format."""
-    if isinstance(error, str):
-        try:
-            error_dict = json.loads(error)
-            status = error_dict.get('status', 500)
-            message = error_dict.get('message', str(error))
-        except json.JSONDecodeError:
-            status = 500
-            message = str(error)
-    else:
-        status = 500
-        message = str(error)
-    
-    return error_response(message, status_code=status, is_api=is_api)
-
-def set_response(statusCode, body):
-    return success_response(body, status_code=statusCode or 500)
-
-def validate_input_legacy(input, required_fields={}, optional_fields={}):
-    """Legacy validate_input for backward compatibility."""
-    is_valid, _ = validate_input(input, set(required_fields), set(optional_fields))
-    return is_valid
-
-# Point old name to new function
-validate_input = validate_input_legacy

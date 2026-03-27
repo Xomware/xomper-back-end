@@ -1,10 +1,10 @@
 """
-XOMIFY Logger
+XOMPER Logger
 =============
 Centralized logging for all Lambda functions.
 
-Fixes:
-- No duplicate log entries (was adding handlers on every call)
+Features:
+- No duplicate log entries (prevents adding handlers on every call)
 - Consistent formatting across all functions
 - Proper log levels
 - Context-aware logging with function/file info

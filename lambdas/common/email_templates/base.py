@@ -237,8 +237,8 @@ def generate_vote_breakdown(approved_voters: list, rejected_voters: list) -> str
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
                        style="background-color: {SURFACE_LIGHT}; border-radius: 3px; overflow: hidden; height: 6px;">
                     <tr>
-                        {"<td width='" + str(int(yes_count / total * 100)) + "%' style='background-color: " + SUCCESS_GREEN + "; height: 6px;'></td>" if yes_count > 0 else ""}
-                        {"<td width='" + str(int(no_count / total * 100)) + "%' style='background-color: " + ERROR_RED + "; height: 6px;'></td>" if no_count > 0 else ""}
+                        {"<td width='" + str(int(yes_count / total * 100)) + "%' style='background-color: " + SUCCESS_GREEN + "; height: 6px;'></td>" if yes_count > 0 and total > 0 else ""}
+                        {"<td width='" + str(int(no_count / total * 100)) + "%' style='background-color: " + ERROR_RED + "; height: 6px;'></td>" if no_count > 0 and total > 0 else ""}
                         {"<td style='height: 6px;'></td>" if total == 0 else ""}
                     </tr>
                 </table>

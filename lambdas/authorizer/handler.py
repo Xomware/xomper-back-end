@@ -1,19 +1,22 @@
-
+"""
+Lambda Authorizer
+=================
+JWT-based API Gateway authorizer for Xomper.
+"""
 
 import jwt
 from lambdas.common.constants import PRODUCT
 from lambdas.common.ssm_helpers import API_SECRET_KEY
-from lambdas.common.errors import LambdaAuthorizerError
 from lambdas.common.logger import get_logger
 
 log = get_logger(__file__)
 
 HANDLER = 'authorizer'
 
-def generate_policy(effect, resource):
-    #Return a valid AWS policy response
-    #auth_response = {'principalId': principal_id}
-    auth_response = {
+
+def generate_policy(effect: str, resource: str) -> dict:
+    """Return a valid AWS IAM policy response for API Gateway."""
+    return {
         'principalId': PRODUCT,
         'policyDocument': {
             'Version': '2012-10-17',
@@ -26,45 +29,50 @@ def generate_policy(effect, resource):
             ]
         }
     }
-    return auth_response
 
-def decode_auth_token(auth_token):
-    #Decodes the auth token
+
+def decode_auth_token(auth_token: str) -> dict | None:
+    """Decode a JWT auth token. Returns claims dict or None on failure."""
     try:
-        # remove "Bearer " from the token string.
-        auth_token = auth_token.replace('Bearer ', '')
-        # decode using system environ $SECRET_KEY, will crash if not set.
-        return jwt.decode(auth_token, API_SECRET_KEY, algorithms=['HS256'])
+        token = auth_token.replace('Bearer ', '')
+        return jwt.decode(token, API_SECRET_KEY, algorithms=['HS256'])
     except jwt.ExpiredSignatureError:
-        'Signature expired. Please log in again.'
-        return
-    except jwt.InvalidTokenError:
-        'Invalid token. Please log in again.'
-        return
-    
-def handler(event, context):
+        log.warning("Authorizer: token expired")
+        return None
+    except jwt.InvalidTokenError as err:
+        log.warning(f"Authorizer: invalid token - {err}")
+        return None
+
+
+def handler(event: dict, context: object) -> dict:
+    """Lambda authorizer entry point."""
+    method_arn = event.get('methodArn', '')
+
     try:
-        method_arn = event.get('methodArn', '')
         auth_token = event.get('authorizationToken', '')
-        
-        if auth_token and method_arn:
-            user_details = decode_auth_token(auth_token)
-            if user_details:
-                arn_parts = method_arn.split(':')
-                api_gateway_arn_tmp = arn_parts[5].split('/')
-                # Construct: arn:aws:execute-api:region:account:apiId/stage/*
-                resource_arn = f"{arn_parts[0]}:{arn_parts[1]}:{arn_parts[2]}:{arn_parts[3]}:{arn_parts[4]}:{api_gateway_arn_tmp[0]}/{api_gateway_arn_tmp[1]}/*"
-                
-                return generate_policy('Allow', resource_arn)
-            
-        log.warning("Authroizer: Deny.")
+
+        if not auth_token:
+            log.warning("Authorizer: no authorization token provided")
+            return generate_policy('Deny', method_arn)
+
+        if not method_arn:
+            log.error("Authorizer: no methodArn in event")
+            return generate_policy('Deny', method_arn)
+
+        user_details = decode_auth_token(auth_token)
+        if user_details:
+            arn_parts = method_arn.split(':')
+            api_gateway_arn_tmp = arn_parts[5].split('/')
+            resource_arn = (
+                f"{arn_parts[0]}:{arn_parts[1]}:{arn_parts[2]}:"
+                f"{arn_parts[3]}:{arn_parts[4]}:"
+                f"{api_gateway_arn_tmp[0]}/{api_gateway_arn_tmp[1]}/*"
+            )
+            return generate_policy('Allow', resource_arn)
+
+        log.warning("Authorizer: Deny - token decode failed")
         return generate_policy('Deny', method_arn)
+
     except Exception as err:
-        message = err.args[0]
-        function = 'handler'
-        if len(err.args) > 1:
-            function = err.args[1]
-        log.error('💥 Error in Lambda Authorizer: ' + message)
-        error = LambdaAuthorizerError(message, HANDLER, function)
+        log.error(f"Authorizer: unexpected error - {err}", exc_info=True)
         return generate_policy('Deny', method_arn)
-    
