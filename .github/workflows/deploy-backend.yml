@@ -19,7 +19,7 @@ jobs:
       has_lambda_changes: ${{ steps.changes.outputs.has_lambda_changes }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
@@ -61,6 +61,28 @@ jobs:
           echo "all_lambdas=$ALL_LAMBDAS" >> $GITHUB_OUTPUT
           echo "All lambdas: $ALL_LAMBDAS"
 
+  test-common:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov moto boto3
+
+      - name: Run common tests
+        run: |
+          pytest tests/test_common.py -v --cov=lambdas/common
+
   test-lambdas:
     needs: detect-changes
     if: needs.detect-changes.outputs.has_lambda_changes == 'true'
@@ -71,16 +93,17 @@ jobs:
       fail-fast: false
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.10"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install -r requirements.txt
           pip install pytest pytest-cov moto boto3
 
       - name: Run tests for ${{ matrix.lambda }}
@@ -89,21 +112,21 @@ jobs:
             echo "Running tests for ${{ matrix.lambda }}"
             pytest tests/test_${{ matrix.lambda }}.py -v --cov=lambdas/${{ matrix.lambda }}
           else
-            echo "⚠️  No tests found for ${{ matrix.lambda }}, skipping..."
+            echo "No tests found for ${{ matrix.lambda }}, skipping..."
           fi
 
   deploy-layer:
-    needs: [detect-changes, test-lambdas]
-    if: always() && needs.detect-changes.outputs.common_changed == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
+    needs: [detect-changes, test-common, test-lambdas]
+    if: always() && needs.detect-changes.outputs.common_changed == 'true' && needs.test-common.result == 'success' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       layer_arn: ${{ steps.deploy-layer.outputs.layer_arn }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.10"
 
@@ -165,10 +188,10 @@ jobs:
       fail-fast: false
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.10"
 

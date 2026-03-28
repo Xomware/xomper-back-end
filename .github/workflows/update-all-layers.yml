@@ -43,7 +43,7 @@ jobs:
       all_lambdas: ${{ steps.list-lambdas.outputs.all_lambdas }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: List all lambda folders
         id: list-lambdas
