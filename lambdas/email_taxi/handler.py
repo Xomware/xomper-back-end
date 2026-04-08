@@ -22,6 +22,8 @@ from lambdas.common.email_templates import (
     generate_taxi_steal_owner_email,
     generate_taxi_steal_owner_email_plain_text,
 )
+from lambdas.common.sns_helper import send_push_to_users
+from lambdas.common.push_templates import taxi_steal_push
 
 log = get_logger(__file__)
 
@@ -110,6 +112,15 @@ def handler(event, context):
     # Send all emails concurrently
     successes, failures = send_emails_concurrently(tasks)
     log.info(f"Taxi emails complete: {successes} sent, {failures} failed")
+
+    # Send push notifications (fire-and-forget)
+    user_ids = body.get("user_ids", [])
+    if user_ids:
+        try:
+            title, push_body, category, data = taxi_steal_push(stealer_name, player_name)
+            send_push_to_users(user_ids, title, push_body, category, data)
+        except Exception as err:
+            log.error(f"Push notification error (non-blocking): {err}")
 
     return success_response({
         "successfulEmails": successes,

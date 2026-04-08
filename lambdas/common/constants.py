@@ -22,6 +22,10 @@ DYNAMODB_KMS_ALIAS = os.environ['DYNAMODB_KMS_ALIAS']
 FROM_EMAIL = os.environ.get('FROM_EMAIL', 'noreply@xomper.xomware.com')
 XOMPER_URL = "https://xomper.xomware.com"
 
+# Push Notifications (SNS)
+SNS_PLATFORM_APP_ARN = os.environ.get("SNS_PLATFORM_APP_ARN", "")
+DEVICE_TOKENS_TABLE = os.environ.get("DEVICE_TOKENS_TABLE", "xomper-device-tokens")
+
 # LOGO URL
 LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-logo.jpg"
 BANNER_LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-banner.jpg"
