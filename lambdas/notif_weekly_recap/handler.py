@@ -33,6 +33,11 @@ from lambdas.common.sleeper_helper import (
 )
 from lambdas.common.sns_helper import send_push_to_users
 from lambdas.common.push_templates import weekly_recap_push
+from lambdas.common.ses_helper import send_emails_concurrently
+from lambdas.common.email_templates import (
+    generate_weekly_recap_email,
+    generate_weekly_recap_email_plain_text,
+)
 
 log = get_logger(__file__)
 HANDLER = "notif_weekly_recap"
@@ -93,16 +98,29 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     top_team_name = team_name_for_roster(top_entry["roster_id"])
     top_pts = float(top_entry.get("points", 0.0))
 
-    # 7. Resolve recipients from Supabase (sleeper_user_id → push)
+    # 7. Resolve recipients from Supabase (sleeper_user_id → push + email)
     whitelisted = get_active_whitelisted_users()
-    sleeper_id_to_email = {
-        w.get("sleeper_user_id"): w.get("email")
+    sleeper_id_to_user = {
+        w.get("sleeper_user_id"): w
         for w in whitelisted
         if w.get("sleeper_user_id")
     }
 
-    sent = 0
-    # 8. For each matchup pair, send personalized push to both managers
+    # Pre-compute the league-wide standings table once so each manager's
+    # email gets the same sorted score listing.
+    all_scores: list[tuple[str, float]] = sorted(
+        [
+            (team_name_for_roster(m["roster_id"]), float(m.get("points", 0.0)))
+            for m in matchups
+        ],
+        key=lambda t: t[1],
+        reverse=True,
+    )
+
+    push_sent = 0
+    email_tasks: list[tuple[str, str, str, str]] = []
+
+    # 8. For each matchup pair, send personalized push + email to both managers
     for mid, pair in by_matchup.items():
         if len(pair) != 2:
             continue  # skip byes / malformed
@@ -118,13 +136,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             owner_id = roster.get("owner_id")
             if not owner_id:
                 continue
-            if owner_id not in sleeper_id_to_email:
+            if owner_id not in sleeper_id_to_user:
                 # Manager not in our whitelisted_users — skip silently.
                 continue
 
             user_team_name = team_name_for_roster(me["roster_id"])
             opp_team_name = team_name_for_roster(opp["roster_id"])
             user_won = me_pts > opp_pts
+            is_tie = abs(me_pts - opp_pts) < 0.0001
 
             title, body, category, data = weekly_recap_push(
                 week=target_week,
@@ -137,10 +156,64 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 league_high_pts=top_pts,
             )
             send_push_to_users([owner_id], title, body, category, data)
-            sent += 1
+            push_sent += 1
 
-    log.info(f"Weekly recap sent to {sent} managers for week {target_week}.")
+            wl_user = sleeper_id_to_user[owner_id]
+            email = wl_user.get("email")
+            if not email:
+                continue
+            manager_name = (
+                wl_user.get("display_name")
+                or user_by_id.get(owner_id, {}).get("display_name")
+                or wl_user.get("sleeper_username")
+                or "Manager"
+            )
+            subject = f"Week {target_week} {league_name} recap"
+            html = generate_weekly_recap_email(
+                manager_name=manager_name,
+                league_name=league_name,
+                week=target_week,
+                user_team_name=user_team_name,
+                user_points=me_pts,
+                opponent_team_name=opp_team_name,
+                opponent_points=opp_pts,
+                user_won=user_won,
+                is_tie=is_tie,
+                league_high_team=top_team_name,
+                league_high_points=top_pts,
+                all_scores=all_scores,
+            )
+            text = generate_weekly_recap_email_plain_text(
+                manager_name=manager_name,
+                league_name=league_name,
+                week=target_week,
+                user_team_name=user_team_name,
+                user_points=me_pts,
+                opponent_team_name=opp_team_name,
+                opponent_points=opp_pts,
+                user_won=user_won,
+                is_tie=is_tie,
+                league_high_team=top_team_name,
+                league_high_points=top_pts,
+                all_scores=all_scores,
+            )
+            email_tasks.append((email, subject, html, text))
+
+    email_sent, email_failed = (0, 0)
+    if email_tasks:
+        email_sent, email_failed = send_emails_concurrently(email_tasks)
+
+    log.info(
+        f"Weekly recap: {push_sent} push, {email_sent} email "
+        f"({email_failed} email failed) for week {target_week}."
+    )
     return success_response(
-        {"sent": sent, "week": target_week, "league_id": league_id},
+        {
+            "push_sent": push_sent,
+            "email_sent": email_sent,
+            "email_failed": email_failed,
+            "week": target_week,
+            "league_id": league_id,
+        },
         is_api=False,
     )

@@ -25,6 +25,14 @@ from .rule_denied import (
     generate_rule_denied_email,
     generate_rule_denied_email_plain_text,
 )
+from .lineup_not_set import (
+    generate_lineup_not_set_email,
+    generate_lineup_not_set_email_plain_text,
+)
+from .weekly_recap import (
+    generate_weekly_recap_email,
+    generate_weekly_recap_email_plain_text,
+)
 
 __all__ = [
     "generate_taxi_steal_league_email",
@@ -37,4 +45,8 @@ __all__ = [
     "generate_rule_accepted_email_plain_text",
     "generate_rule_denied_email",
     "generate_rule_denied_email_plain_text",
+    "generate_lineup_not_set_email",
+    "generate_lineup_not_set_email_plain_text",
+    "generate_weekly_recap_email",
+    "generate_weekly_recap_email_plain_text",
 ]
