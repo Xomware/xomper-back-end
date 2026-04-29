@@ -26,6 +26,11 @@ from lambdas.common.sleeper_helper import (
 )
 from lambdas.common.sns_helper import send_push_to_users
 from lambdas.common.push_templates import lineup_not_set_push
+from lambdas.common.ses_helper import send_emails_concurrently
+from lambdas.common.email_templates import (
+    generate_lineup_not_set_email,
+    generate_lineup_not_set_email_plain_text,
+)
 
 log = get_logger(__file__)
 HANDLER = "notif_lineup_not_set"
@@ -62,16 +67,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     user_by_id = {u["user_id"]: u for u in users}
 
     whitelisted = get_active_whitelisted_users()
-    sleeper_id_to_email = {
-        w.get("sleeper_user_id"): w.get("email")
+    sleeper_id_to_user = {
+        w.get("sleeper_user_id"): w
         for w in whitelisted
         if w.get("sleeper_user_id")
     }
 
-    sent = 0
+    push_sent = 0
+    email_tasks: list[tuple[str, str, str, str]] = []
+
     for roster in rosters:
         owner_id = roster.get("owner_id")
-        if not owner_id or owner_id not in sleeper_id_to_email:
+        if not owner_id or owner_id not in sleeper_id_to_user:
             continue
 
         starters = roster.get("starters") or []
@@ -92,15 +99,55 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if issue_count == 0:
             continue
 
+        # Push leg
         title, body, category, data = lineup_not_set_push(
             league_name=league_name,
             issue_count=issue_count,
         )
         send_push_to_users([owner_id], title, body, category, data)
-        sent += 1
+        push_sent += 1
 
-    log.info(f"Lineup reminder sent to {sent} managers.")
+        # Email leg — opt-in via the user having an email on file.
+        wl_user = sleeper_id_to_user[owner_id]
+        email = wl_user.get("email")
+        if not email:
+            continue
+        manager_name = (
+            wl_user.get("display_name")
+            or user_by_id.get(owner_id, {}).get("display_name")
+            or wl_user.get("sleeper_username")
+            or "Manager"
+        )
+        subject = f"Set your {league_name} lineup — Week {week}"
+        html = generate_lineup_not_set_email(
+            manager_name=manager_name,
+            league_name=league_name,
+            issue_count=issue_count,
+            week=week,
+        )
+        text = generate_lineup_not_set_email_plain_text(
+            manager_name=manager_name,
+            league_name=league_name,
+            issue_count=issue_count,
+            week=week,
+        )
+        email_tasks.append((email, subject, html, text))
+
+    email_sent, email_failed = (0, 0)
+    if email_tasks:
+        email_sent, email_failed = send_emails_concurrently(email_tasks)
+
+    log.info(
+        f"Lineup reminder: {push_sent} push, {email_sent} email "
+        f"({email_failed} email failed)."
+    )
     return success_response(
-        {"sent": sent, "week": week, "league_id": league_id},
+        {
+            "push_sent": push_sent,
+            "email_sent": email_sent,
+            "email_failed": email_failed,
+            "week": week,
+            "league_id": league_id,
+        },
         is_api=False,
     )
