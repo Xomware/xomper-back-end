@@ -76,3 +76,16 @@ def get_sleeper_league_users(league_id: str) -> list[dict[str, Any]]:
     """Get all users for a Sleeper league."""
     url = f"{SLEEPER_URL_BASE}/league/{league_id}/users"
     return _get(url, "Error getting league users")
+
+
+def get_sleeper_league_matchups(league_id: str, week: int) -> list[dict[str, Any]]:
+    """Get all matchup entries for a league + week. Each entry is one
+    roster's score; pair by `matchup_id` to assemble head-to-head."""
+    url = f"{SLEEPER_URL_BASE}/league/{league_id}/matchups/{week}"
+    return _get(url, f"Error getting league matchups for week {week}")
+
+
+def get_nfl_state() -> dict[str, Any]:
+    """Get the current NFL state (season, week, type)."""
+    url = f"{SLEEPER_URL_BASE}/state/nfl"
+    return _get(url, "Error getting NFL state")
