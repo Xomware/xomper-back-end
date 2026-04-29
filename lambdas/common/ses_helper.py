@@ -71,6 +71,10 @@ def send_email(
             field="to_email",
         )
 
+    # Lazy import — keeps cold-start light when notification_log
+    # isn't reachable (e.g. in unit tests that monkey-patch SES).
+    from lambdas.common.notification_log import log_email
+
     masked = mask_email(to_email)
     try:
         response = ses_client.send_email(
@@ -86,13 +90,31 @@ def send_email(
             Tags=tags or [],
         )
         log.info(f"Email sent to {masked}, MessageId: {response.get('MessageId')}")
+        log_email(
+            recipient=to_email,
+            subject=subject,
+            success=True,
+            body_snippet=text_body,
+        )
         return True
     except ClientError as err:
         error = err.response['Error']
         log.error(f"SES error sending to {masked}: {error['Code']} - {error['Message']}")
+        log_email(
+            recipient=to_email,
+            subject=subject,
+            success=False,
+            error=f"{error['Code']}: {error['Message']}",
+        )
         return False
     except Exception as err:
         log.error(f"Error sending email to {masked}: {err}")
+        log_email(
+            recipient=to_email,
+            subject=subject,
+            success=False,
+            error=str(err),
+        )
         return False
 
 

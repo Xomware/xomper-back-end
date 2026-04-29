@@ -86,3 +86,27 @@ def get_active_whitelisted_users() -> list[dict[str, Any]]:
         {"is_active": "eq.true"},
         "Error fetching active whitelisted users",
     )
+
+
+def get_whitelisted_user_by_sleeper_id(sleeper_user_id: str) -> dict[str, Any] | None:
+    """Lookup a whitelisted user by their Sleeper user_id. Used by
+    the admin endpoints to gate access via the `is_admin` column.
+    Returns nil for unknown / inactive accounts."""
+    rows = _get(
+        "whitelisted_users",
+        {"sleeper_user_id": f"eq.{sleeper_user_id}", "is_active": "eq.true"},
+        "Error fetching whitelisted user by sleeper id",
+    )
+    return rows[0] if rows else None
+
+
+def get_whitelisted_user_by_email(email: str) -> dict[str, Any] | None:
+    """Lookup a whitelisted user by email. Fallback when the
+    Sleeper id isn't available (e.g. token-based auth that only
+    has the user's email)."""
+    rows = _get(
+        "whitelisted_users",
+        {"email": f"eq.{email}", "is_active": "eq.true"},
+        "Error fetching whitelisted user by email",
+    )
+    return rows[0] if rows else None

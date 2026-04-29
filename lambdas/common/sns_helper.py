@@ -165,7 +165,9 @@ def send_push_to_users(
 
     Queries the device_tokens DynamoDB table for endpoint ARNs, then sends
     concurrently using a thread pool. Fire-and-forget safe -- exceptions are
-    caught and logged, never raised.
+    caught and logged, never raised. Every per-user attempt (including
+    "no device token registered") writes a row to xomper-notification-log
+    so the admin portal sees the full activity feed.
 
     Args:
         user_ids: List of user IDs to notify
@@ -180,10 +182,29 @@ def send_push_to_users(
     if not user_ids:
         return 0, 0
 
+    # Lazy import — see ses_helper for rationale.
+    from lambdas.common.notification_log import log_push
+
     try:
         endpoint_arns = _get_endpoints_for_users(user_ids)
+
+        # Single-user attribution covers ~all current callers (handlers
+        # send per-manager). For multi-user fan-outs (rule proposal /
+        # accept / deny) we attribute log rows to "_multi" — the admin
+        # portal can correlate by `title` + `epoch_ms`.
+        attributed_user = user_ids[0] if len(user_ids) == 1 else "_multi"
+
         if not endpoint_arns:
             log.info(f"No device tokens found for {len(user_ids)} user(s)")
+            for uid in user_ids:
+                log_push(
+                    user_id=uid,
+                    title=title,
+                    body=body,
+                    category=category,
+                    success=False,
+                    error="no device tokens registered",
+                )
             return 0, 0
 
         with ThreadPoolExecutor(max_workers=min(len(endpoint_arns), 10)) as executor:
@@ -192,6 +213,16 @@ def send_push_to_users(
                 for arn in endpoint_arns
             ]
             results = [f.result() for f in futures]
+
+        for ok in results:
+            log_push(
+                user_id=attributed_user,
+                title=title,
+                body=body,
+                category=category,
+                success=ok,
+                error=None if ok else "send_push returned false",
+            )
 
         successes = sum(1 for r in results if r)
         failures = len(results) - successes
