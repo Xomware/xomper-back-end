@@ -175,13 +175,39 @@ def patched_orchestrator(monkeypatch: pytest.MonkeyPatch):
         lambda: state["active_league"],
     )
 
+    # Two-hop historical chain for `seasons_back` backfill tests:
+    #   LEAGUE_ID (2026) -> PRIOR_LEAGUE_ID (2025) -> HIST_2024 (2024).
+    league_chain: dict[str, dict[str, Any]] = {
+        LEAGUE_ID: {
+            "league_id": LEAGUE_ID,
+            "name": "CLT DYNASTY",
+            "previous_league_id": PRIOR_LEAGUE_ID,
+            "season": "2026",
+        },
+        PRIOR_LEAGUE_ID: {
+            "league_id": PRIOR_LEAGUE_ID,
+            "name": "CLT DYNASTY (2025)",
+            "previous_league_id": "HIST_2024",
+            "season": "2025",
+        },
+        "HIST_2024": {
+            "league_id": "HIST_2024",
+            "name": "CLT DYNASTY (2024)",
+            "previous_league_id": None,
+            "season": "2024",
+        },
+    }
+    state["league_chain"] = league_chain
+
     def _get_league(league_id: str) -> dict[str, Any]:
-        if league_id == PRIOR_LEAGUE_ID:
-            return {
-                "league_id": PRIOR_LEAGUE_ID,
-                "name": "CLT DYNASTY (2025)",
-                "season": "2025",
-            }
+        if league_id in league_chain:
+            entry = dict(league_chain[league_id])
+            if league_id == LEAGUE_ID:
+                # Honor the per-test override on the active league's
+                # previous_league_id so the existing
+                # `test_no_previous_league_raises` test keeps working.
+                entry["previous_league_id"] = state["prior_league_id"]
+            return entry
         return {
             "league_id": league_id,
             "name": "CLT DYNASTY",
@@ -192,7 +218,10 @@ def patched_orchestrator(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(orch, "get_sleeper_league", _get_league)
     monkeypatch.setattr(orch, "get_nfl_state", lambda: state["nfl_state"])
 
+    state["matchup_calls"] = []
+
     def _matchups(league_id: str, week: int) -> list[dict[str, Any]]:
+        state["matchup_calls"].append((league_id, week))
         # Allow tests to override matchups per (league, week).
         key = (league_id, week)
         if key in state["matchups_by_league_week"]:
@@ -947,3 +976,254 @@ class TestHandler:
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
         assert body["use_previous_season"] is True
+
+
+# ---------------------------------------------------------------------------
+# Backfill — seasons_back (replaces use_previous_season)
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorSeasonsBack:
+    """Covers the generic `seasons_back` arg: 0 = current,
+    1 = prior season, 2 = two seasons ago, etc. The deprecated
+    `use_previous_season` alias still maps to 1 for back-compat."""
+
+    def test_seasons_back_zero_is_default_current_season(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        result = run_weekly(week=4, dry_run=True, force=False)
+        assert result["seasons_back"] == 0
+        assert result["use_previous_season"] is False
+        # Matchups fetched against the active league.
+        assert patched_orchestrator["matchup_calls"][0][0] == LEAGUE_ID
+        # Period uses the current season.
+        assert result["period"] == "2026W04"
+
+    def test_seasons_back_one_walks_to_prior_league(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        result = run_weekly(
+            week=4, dry_run=True, force=False, seasons_back=1
+        )
+        assert result["seasons_back"] == 1
+        # Back-compat surface still set.
+        assert result["use_previous_season"] is True
+        # Matchups fetched against the prior league.
+        assert patched_orchestrator["matchup_calls"][0][0] == PRIOR_LEAGUE_ID
+        # Period uses the historical season (2025).
+        assert result["period"] == "2025W04"
+        write = patched_orchestrator["writes"][0]
+        assert write["period"] == "2025W04"
+        assert write["metadata"]["seasons_back"] == 1
+        assert write["metadata"]["matchup_league_id"] == PRIOR_LEAGUE_ID
+
+    def test_seasons_back_two_walks_twice(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        result = run_weekly(
+            week=4, dry_run=True, force=False, seasons_back=2
+        )
+        assert result["seasons_back"] == 2
+        # Matchups fetched against the two-hop league.
+        assert patched_orchestrator["matchup_calls"][0][0] == "HIST_2024"
+        assert result["period"] == "2024W04"
+        write = patched_orchestrator["writes"][0]
+        assert write["period"] == "2024W04"
+        assert write["metadata"]["matchup_league_id"] == "HIST_2024"
+
+    def test_seasons_back_exceeds_chain_raises(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.errors import NotFoundError
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        # Chain only goes 2 hops deep, request 10.
+        with pytest.raises(NotFoundError):
+            run_weekly(
+                week=4, dry_run=True, force=False, seasons_back=10
+            )
+        # No write happened.
+        assert patched_orchestrator["writes"] == []
+
+    def test_seasons_back_negative_raises_validation(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.errors import ValidationError
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        with pytest.raises(ValidationError):
+            run_weekly(
+                week=4, dry_run=True, force=False, seasons_back=-1
+            )
+
+    def test_use_previous_season_back_compat_maps_to_one(
+        self, patched_orchestrator
+    ) -> None:
+        """Deprecated alias still works — should resolve to
+        seasons_back=1 with the same downstream behavior."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        result = run_weekly(
+            week=4,
+            dry_run=True,
+            force=False,
+            use_previous_season=True,
+        )
+        assert result["seasons_back"] == 1
+        assert result["use_previous_season"] is True
+        assert patched_orchestrator["matchup_calls"][0][0] == PRIOR_LEAGUE_ID
+        assert result["period"] == "2025W04"
+
+    def test_seasons_back_bypasses_offseason_preflight(
+        self, patched_orchestrator
+    ) -> None:
+        """Backfill against finished seasons works even when current
+        NFL state is offseason — this is the whole point."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        patched_orchestrator["nfl_state"] = {
+            "season": "2026",
+            "season_type": "off",
+            "week": 0,
+        }
+        result = run_weekly(
+            week=4, dry_run=True, force=False, seasons_back=2
+        )
+        assert result["status"] == "dry_run_sent"
+        assert result["period"] == "2024W04"
+
+    def test_idempotency_per_historical_period(
+        self, patched_orchestrator
+    ) -> None:
+        """Existing 2024W04 row should not block 2025W04 writes."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        patched_orchestrator["existing_report"] = {
+            "league_id": LEAGUE_ID,
+            "report_type": "weekly",
+            "period": "2024W04",
+            "created_at": "2025-01-01T00:00:00Z",
+        }
+        result = run_weekly(
+            week=4, dry_run=True, force=False, seasons_back=1
+        )
+        assert result["period"] == "2025W04"
+
+    def test_idempotency_same_historical_period_409s(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.errors import ReportAlreadyExistsError
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        patched_orchestrator["existing_report"] = {
+            "league_id": LEAGUE_ID,
+            "report_type": "weekly",
+            "period": "2024W04",
+            "created_at": "2025-01-01T00:00:00Z",
+        }
+        with pytest.raises(ReportAlreadyExistsError):
+            run_weekly(
+                week=4, dry_run=True, force=False, seasons_back=2
+            )
+
+
+class TestHandlerSeasonsBack:
+    def test_handler_seasons_back_2_returns_2024_period(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lambdas.api_admin_ai_review_weekly_trigger import handler as h
+
+        monkeypatch.setattr(
+            h,
+            "require_admin",
+            lambda event, body: {"sleeper_user_id": ADMIN_ID},
+        )
+        response = h.handler(
+            _api_event(
+                body={
+                    "week": 4,
+                    "dry_run": True,
+                    "force": True,
+                    "seasons_back": 2,
+                }
+            ),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["seasons_back"] == 2
+        assert body["period"] == "2024W04"
+
+    def test_handler_seasons_back_string_coerced(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lambdas.api_admin_ai_review_weekly_trigger import handler as h
+
+        monkeypatch.setattr(
+            h,
+            "require_admin",
+            lambda event, body: {"sleeper_user_id": ADMIN_ID},
+        )
+        response = h.handler(
+            _api_event(
+                body={"week": 4, "dry_run": True, "seasons_back": "1"}
+            ),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["seasons_back"] == 1
+        assert body["period"] == "2025W04"
+
+    def test_handler_seasons_back_10_returns_404(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lambdas.api_admin_ai_review_weekly_trigger import handler as h
+
+        monkeypatch.setattr(
+            h,
+            "require_admin",
+            lambda event, body: {"sleeper_user_id": ADMIN_ID},
+        )
+        response = h.handler(
+            _api_event(
+                body={"week": 4, "dry_run": True, "seasons_back": 10}
+            ),
+            context=None,
+        )
+        assert response["statusCode"] == 404
+
+    def test_handler_iOS_payload_unchanged_no_seasons_back(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """iOS only sends {week, dry_run, force} — seasons_back
+        defaults to 0 and the response shape doesn't change."""
+        from lambdas.api_admin_ai_review_weekly_trigger import handler as h
+
+        monkeypatch.setattr(
+            h,
+            "require_admin",
+            lambda event, body: {"sleeper_user_id": ADMIN_ID},
+        )
+        response = h.handler(
+            _api_event(body={"week": 4, "dry_run": True, "force": False}),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["seasons_back"] == 0
+        assert body["period"] == "2026W04"
