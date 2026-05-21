@@ -37,9 +37,20 @@ AI_REVIEW_PRESEASON_PROMPT_VERSION = os.environ.get(
 AI_REVIEW_DEFAULT_MODEL = "claude-haiku-4-5"
 AI_REVIEW_MAX_TOKENS = 4000
 AI_REVIEW_PRESEASON_MAX_TOKENS = 6000
+AI_REVIEW_WEEKLY_MAX_TOKENS = 6000
 # NFL state.season_type values that mean "regular season has not yet
 # started" — used as the preseason pre-flight gate.
 AI_REVIEW_PRESEASON_OK_SEASON_TYPES = ("pre", "off")
+# NFL state.season_type values that mean "regular season is in
+# progress" — used as the weekly recap pre-flight gate. "post" is
+# included so playoff weeks (19+) also recap.
+AI_REVIEW_WEEKLY_OK_SEASON_TYPES = ("regular", "post")
+AI_REVIEW_WEEKLY_PROMPT_VERSION = os.environ.get(
+    "AI_REVIEW_WEEKLY_PROMPT_VERSION", "f3-weekly-2026-05-21"
+)
+AI_REVIEW_WEEKLY_MEMORY_LOOKBACK = 6
+AI_REVIEW_WEEKLY_MAX_NEW_MEMORIES = 5
+AI_MEMORIES_TABLE = os.environ.get("AI_MEMORIES_TABLE", "xomper-ai-memories")
 
 # Admin user id for dry-run delivery (Dominick).
 ADMIN_DOMINICK_USER_ID = "594625531702460416"
