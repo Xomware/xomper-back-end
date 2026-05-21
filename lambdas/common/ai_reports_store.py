@@ -202,6 +202,83 @@ def get_latest(league_id: str, report_type: str) -> dict[str, Any] | None:
     return items[0] if items else None
 
 
+def update_metadata(
+    league_id: str,
+    report_type: str,
+    period: str,
+    partial: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge `partial` into the existing item's `metadata` map without
+    overwriting unrelated fields. Used by F1's post-broadcast hook to
+    stamp `metadata.broadcast_at` once the league fan-out completes.
+
+    Raises:
+        ValidationError: invalid report_type / empty inputs.
+        DynamoDBError: on Dynamo failure.
+
+    Returns:
+        The updated item.
+    """
+    _validate_report_type(report_type)
+    if not league_id:
+        raise ValidationError(
+            message="update_metadata requires a non-empty league_id",
+            handler="ai_reports_store",
+            function="update_metadata",
+            field="league_id",
+        )
+    if not period:
+        raise ValidationError(
+            message="update_metadata requires a non-empty period",
+            handler="ai_reports_store",
+            function="update_metadata",
+            field="period",
+        )
+    if not isinstance(partial, dict) or not partial:
+        raise ValidationError(
+            message="update_metadata requires a non-empty partial dict",
+            handler="ai_reports_store",
+            function="update_metadata",
+            field="partial",
+        )
+
+    # Build a SET ... statement that touches only the keys passed in.
+    # Each key becomes `metadata.#k_i = :v_i` with ExpressionAttributeNames
+    # so reserved words / dotted keys don't clash with DynamoDB syntax.
+    sets: list[str] = []
+    names: dict[str, str] = {"#meta": "metadata"}
+    values: dict[str, Any] = {}
+    for idx, (key, value) in enumerate(partial.items()):
+        name_placeholder = f"#k{idx}"
+        value_placeholder = f":v{idx}"
+        sets.append(f"#meta.{name_placeholder} = {value_placeholder}")
+        names[name_placeholder] = key
+        values[value_placeholder] = value
+
+    update_expression = "SET " + ", ".join(sets)
+
+    try:
+        response = _table().update_item(
+            Key={"pk": _pk(league_id), "sk": _sk(report_type, period)},
+            UpdateExpression=update_expression,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
+        )
+    except Exception as err:
+        raise DynamoDBError(
+            message=f"update_metadata failed: {err}",
+            function="update_metadata",
+            table=AI_REPORTS_TABLE,
+        ) from err
+
+    log.info(
+        f"ai_reports_store.update_metadata: league={league_id} "
+        f"type={report_type} period={period} keys={list(partial.keys())}"
+    )
+    return response.get("Attributes", {})
+
+
 def list_recent(
     league_id: str,
     limit: int = 20,

@@ -3,6 +3,7 @@ XOMPER Sleeper Helper
 =====================
 Synchronous wrappers for the Sleeper.app REST API.
 """
+from __future__ import annotations
 
 import requests
 from typing import Any
@@ -89,3 +90,35 @@ def get_nfl_state() -> dict[str, Any]:
     """Get the current NFL state (season, week, type)."""
     url = f"{SLEEPER_URL_BASE}/state/nfl"
     return _get(url, "Error getting NFL state")
+
+
+def get_sleeper_draft(draft_id: str) -> dict[str, Any]:
+    """Get a Sleeper draft by id. Returns top-level draft metadata
+    including `status` (`pre_draft`, `drafting`, `complete`) and the
+    draft order. Used by AI Review F1 to gate on `status == complete`
+    before generating the post-draft report."""
+    url = f"{SLEEPER_URL_BASE}/draft/{draft_id}"
+    return _get(url, f"Error getting draft {draft_id}")
+
+
+def get_sleeper_draft_picks(draft_id: str) -> list[dict[str, Any]]:
+    """Get all picks for a Sleeper draft. Each entry carries `round`,
+    `pick_no`, `roster_id`, `picked_by` (Sleeper user_id), and
+    `metadata` (player name, position, NFL team). Used by AI Review
+    F1's data loader."""
+    url = f"{SLEEPER_URL_BASE}/draft/{draft_id}/picks"
+    return _get(url, f"Error getting draft picks for {draft_id}")
+
+
+def get_previous_league_id(league_id: str) -> str | None:
+    """Walk one season back via Sleeper's `previous_league_id` field
+    on the league object. Returns the prior season's league_id or
+    None when no prior season is linked (i.e. inaugural season).
+
+    Used by AI Review F1 to pull prior-season standings via the
+    rosters endpoint on the previous league."""
+    league = get_sleeper_league(league_id)
+    prev = league.get("previous_league_id")
+    if prev in (None, "", "0"):
+        return None
+    return str(prev)

@@ -29,6 +29,12 @@ DEVICE_TOKENS_TABLE = os.environ.get("DEVICE_TOKENS_TABLE", "xomper-device-token
 # AI Review (Anthropic / Claude)
 AI_REPORTS_TABLE = os.environ.get("AI_REPORTS_TABLE", "xomper-ai-reports")
 AI_REVIEW_PROMPT_VERSION = os.environ.get("AI_REVIEW_PROMPT_VERSION", "v1")
+AI_REVIEW_POSTDRAFT_PERIOD = "2026"
+AI_REVIEW_DEFAULT_MODEL = "claude-haiku-4-5"
+AI_REVIEW_MAX_TOKENS = 4000
+
+# Admin user id for dry-run delivery (Dominick).
+ADMIN_DOMINICK_USER_ID = "594625531702460416"
 
 # LOGO URL
 LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-logo.jpg"

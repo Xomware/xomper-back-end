@@ -71,19 +71,43 @@ def _get_client() -> Any:
     return _client
 
 
-def _system_blocks(system: str) -> list[dict[str, Any]]:
-    """Convert a single system string into a list of Anthropic
-    content blocks tagged with `cache_control: ephemeral`. We use a
-    single block by default — callers that want multiple cached
-    blocks can compose the system string and trust this wrapper to
-    cache it as one unit."""
-    return [
-        {
-            "type": "text",
-            "text": system,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
+def _system_blocks(system: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize the `system` arg into a list of Anthropic content
+    blocks tagged with `cache_control: ephemeral`.
+
+    Two input shapes are supported:
+
+    - `str`: wrap into a single ephemeral text block (back-compat
+      with F0 callers that pass one flat system string).
+    - `list[dict]`: a pre-built multi-block payload, e.g. F1's
+      `[tone+safety, lore]` split. Each block is shallow-copied and
+      stamped with `cache_control: ephemeral` if the caller didn't
+      already provide one. Each block must carry `type` + `text`.
+    """
+    if isinstance(system, str):
+        return [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    normalized: list[dict[str, Any]] = []
+    for block in system:
+        if not isinstance(block, dict):
+            raise TypeError(
+                "claude_helper: system blocks must be dicts; "
+                f"got {type(block).__name__}"
+            )
+        if "type" not in block or "text" not in block:
+            raise ValueError(
+                "claude_helper: system block requires 'type' and 'text' keys"
+            )
+        copy = dict(block)
+        copy.setdefault("cache_control", {"type": "ephemeral"})
+        normalized.append(copy)
+    return normalized
 
 
 def _is_retriable(err: Exception) -> bool:
@@ -148,21 +172,32 @@ def _log_usage(message: Any, model: str) -> None:
 
 def generate(
     prompt: str,
-    system: str | None = None,
+    system: str | list[dict[str, Any]] | None = None,
     model: str = _DEFAULT_MODEL,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
-) -> str:
+    return_usage: bool = False,
+) -> str | tuple[str, dict[str, int | None]]:
     """Send a single user prompt to Claude and return the text reply.
 
     Args:
         prompt: The user message (per-report data + instructions).
-        system: Optional system prompt (lore + tone). When provided,
-            cached via `cache_control: ephemeral`.
+        system: Optional system prompt. Accepts either a flat string
+            (back-compat — wrapped into a single ephemeral block) or a
+            pre-built `list[dict]` of Anthropic content blocks for
+            multi-block caching (e.g. F1's `[tone+safety, lore]`
+            split). All blocks are tagged with `cache_control:
+            ephemeral` unless the caller set their own value.
         model: Anthropic model id. Defaults to Haiku 4.5.
         max_tokens: Cap on output tokens.
+        return_usage: When True, returns `(text, usage_dict)` where
+            `usage_dict` carries `input_tokens`, `output_tokens`,
+            `cache_read_input_tokens`, `cache_creation_input_tokens`
+            for downstream cost accounting + report metadata. When
+            False (default), returns just the text for back-compat.
 
     Returns:
-        The assistant's text response, concatenated across blocks.
+        The assistant's text response, concatenated across blocks
+        (or the `(text, usage)` tuple when `return_usage=True`).
 
     Raises:
         ClaudeAPIError: On terminal failure after retries.
@@ -182,7 +217,10 @@ def generate(
         try:
             message = client.messages.create(**request_kwargs)
             _log_usage(message, model)
-            return _extract_text(message)
+            text = _extract_text(message)
+            if return_usage:
+                return text, _usage_dict(message)
+            return text
         except Exception as err:  # noqa: BLE001 — funnel to retry / wrap
             last_err = err
             if not _is_retriable(err) or attempt == _MAX_ATTEMPTS:
@@ -198,3 +236,27 @@ def generate(
         message=f"Anthropic call failed after {_MAX_ATTEMPTS} attempts: {last_err}",
         model=model,
     ) from last_err
+
+
+def _usage_dict(message: Any) -> dict[str, int | None]:
+    """Pull a structured usage dict from a Messages API response.
+    Tolerates both SDK objects and dict-shaped mocks. Keys mirror the
+    Anthropic SDK field names so downstream telemetry stays portable."""
+    usage = getattr(message, "usage", None)
+    if usage is None and isinstance(message, dict):
+        usage = message.get("usage")
+
+    def _read(field: str) -> int | None:
+        if usage is None:
+            return None
+        value = getattr(usage, field, None)
+        if value is None and isinstance(usage, dict):
+            value = usage.get(field)
+        return value
+
+    return {
+        "input_tokens": _read("input_tokens"),
+        "output_tokens": _read("output_tokens"),
+        "cache_read_input_tokens": _read("cache_read_input_tokens"),
+        "cache_creation_input_tokens": _read("cache_creation_input_tokens"),
+    }
