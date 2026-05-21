@@ -262,6 +262,30 @@ class ClaudeAPIError(XomperError):
         )
 
 
+class MemoryStoreError(XomperError):
+    """Raised when the `xomper-ai-memories` Dynamo store fails on
+    read/write/delete. Distinct from `DynamoDBError` so the weekly
+    orchestrator can isolate memory-layer failures (which it can
+    swallow without losing the recap) from report-layer failures
+    (which are terminal)."""
+
+    def __init__(
+        self,
+        message: str,
+        handler: str = "ai_memories_store",
+        function: str = "unknown",
+        table: Optional[str] = None,
+    ):
+        details = {"table": table} if table else {}
+        super().__init__(
+            message=message,
+            handler=handler,
+            function=function,
+            status=500,
+            details=details,
+        )
+
+
 class EmailError(XomperError):
     """Raised when email processing fails."""
 
