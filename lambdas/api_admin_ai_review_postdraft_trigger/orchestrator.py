@@ -41,6 +41,7 @@ from lambdas.common.errors import (
     ReportAlreadyExistsError,
 )
 from lambdas.common.logger import get_logger
+from lambdas.common.season_resolver import resolve_league_by_year
 from lambdas.common.ses_helper import send_emails_concurrently
 from lambdas.common.sleeper_helper import (
     get_previous_league_id,
@@ -68,7 +69,6 @@ PUSH_TITLE_BROADCAST = "Your post-draft AI review is in"
 PUSH_BODY_BROADCAST = "Tap to see how your draft graded out."
 PUSH_TITLE_DRY_RUN = "[DRY RUN] Post-draft AI review ready"
 PUSH_BODY_DRY_RUN = "Tap to preview before broadcasting."
-DEEP_LINK = f"xomper://ai-review/post-draft/{AI_REVIEW_POSTDRAFT_PERIOD}"
 PUSH_CATEGORY = "AI_REVIEW"
 
 
@@ -77,6 +77,7 @@ def run(
     dry_run: bool = True,
     force: bool = False,
     created_by_user_id: str | None = None,
+    target_year: int | None = None,
 ) -> dict[str, Any]:
     """Drive the post-draft AI Review generation + delivery.
 
@@ -90,16 +91,25 @@ def run(
             When True, overwrites the existing row.
         created_by_user_id: Sleeper user_id of the admin who fired the
             trigger. Stamped into `metadata` for auditability.
+        target_year: When None (default), uses the active league's
+            current draft and writes period=`AI_REVIEW_POSTDRAFT_PERIOD`.
+            When an int (e.g. 2024), walks `previous_league_id` from
+            the active league until a league with `season ==
+            str(target_year)` is found, then runs the entire pipeline
+            against THAT league's draft + rosters + users + prior
+            standings. Period becomes `str(target_year)`. Used for
+            historical backfill.
 
     Returns:
         Dict carrying `report_id`, `dry_run`, `delivery_count`,
-        `model`, `token_usage`, `status`, `existing`. The handler
-        wraps this for the API response.
+        `model`, `token_usage`, `status`, `existing`, `target_year`,
+        `period`. The handler wraps this for the API response.
 
     Raises:
         DraftNotCompleteError: Sleeper draft status != "complete".
         ReportAlreadyExistsError: Existing row + force=False.
-        NotFoundError: No active whitelisted league configured.
+        NotFoundError: No active whitelisted league configured, or
+            `target_year` not reachable via previous_league_id.
         ClaudeAPIError: Anthropic call failed after retries.
     """
     league_row = get_active_whitelisted_league()
@@ -110,12 +120,12 @@ def run(
             function="run",
             resource="whitelisted_leagues",
         )
-    league_id = (
+    active_league_id = (
         league_row.get("sleeper_league_id")
         or league_row.get("league_id")
         or ""
     )
-    if not league_id:
+    if not active_league_id:
         raise NotFoundError(
             message="Active league row is missing sleeper_league_id",
             handler="notif_ai_review_postdraft",
@@ -123,13 +133,51 @@ def run(
             resource="whitelisted_leagues",
         )
 
-    period = AI_REVIEW_POSTDRAFT_PERIOD
+    # Resolve the league to operate against. For target_year backfill
+    # we walk the previous_league_id chain to the matching season; the
+    # report is still keyed under the ACTIVE league_id (one report row
+    # per (league_id, type, period)) but every Sleeper fetch is
+    # relative to the resolved historical league.
+    if target_year is not None:
+        league = resolve_league_by_year(
+            active_league_id,
+            target_year,
+            league_fetcher=get_sleeper_league,
+        )
+        league_id = active_league_id
+        operating_league_id = (
+            league.get("league_id") or str(league.get("league_id") or "")
+        )
+        if not operating_league_id:
+            raise NotFoundError(
+                message=(
+                    f"Resolved historical league for target_year="
+                    f"{target_year} is missing a league_id"
+                ),
+                handler="notif_ai_review_postdraft",
+                function="run",
+                resource="previous_league_id",
+            )
+        period = str(target_year)
+        log.info(
+            f"notif_ai_review_postdraft: backfill target_year="
+            f"{target_year} -> historical league_id="
+            f"{operating_league_id}"
+        )
+    else:
+        league = get_sleeper_league(active_league_id)
+        league_id = active_league_id
+        operating_league_id = active_league_id
+        period = AI_REVIEW_POSTDRAFT_PERIOD
 
-    # 1. Idempotency
+    # 1. Idempotency — keyed by (active league_id, "postDraft", period)
     existing = ai_reports_store.get_latest(league_id, REPORT_TYPE)
-    if existing and not force:
+    if existing and not force and existing.get("period") == period:
         raise ReportAlreadyExistsError(
-            message="A post-draft report already exists for this league",
+            message=(
+                f"A post-draft report already exists for this league "
+                f"and period {period}"
+            ),
             existing={
                 "league_id": existing.get("league_id"),
                 "report_type": existing.get("report_type"),
@@ -139,13 +187,12 @@ def run(
         )
 
     # 2. Pre-flight: confirm draft is complete
-    league = get_sleeper_league(league_id)
     draft_id = league.get("draft_id")
     if not draft_id:
         raise DraftNotCompleteError(
             message=(
-                f"League {league_id} has no draft_id — Sleeper draft "
-                "not provisioned yet"
+                f"League {operating_league_id} has no draft_id — "
+                "Sleeper draft not provisioned yet"
             ),
             draft_status=None,
         )
@@ -158,12 +205,13 @@ def run(
             draft_status=draft_status,
         )
 
-    # 3. Load data
+    # 3. Load data — all relative to the operating (possibly
+    # historical) league.
     picks = get_sleeper_draft_picks(draft_id)
-    sleeper_users = get_sleeper_league_users(league_id)
-    rosters = get_sleeper_league_rosters(league_id)
+    sleeper_users = get_sleeper_league_users(operating_league_id)
+    rosters = get_sleeper_league_rosters(operating_league_id)
 
-    prior_league_id = get_previous_league_id(league_id)
+    prior_league_id = get_previous_league_id(operating_league_id)
     prior_standings: list[dict[str, Any]] = []
     if prior_league_id:
         try:
@@ -210,6 +258,8 @@ def run(
         "token_usage": token_usage,
         "draft_id": str(draft_id),
         "broadcast_at": None,
+        "target_year": target_year,
+        "operating_league_id": operating_league_id,
     }
     if created_by_user_id:
         metadata["created_by_user_id"] = created_by_user_id
@@ -255,6 +305,8 @@ def run(
         "delivery_count": delivery_count,
         "model": AI_REVIEW_DEFAULT_MODEL,
         "token_usage": token_usage,
+        "period": period,
+        "target_year": target_year,
     }
 
 
@@ -424,6 +476,7 @@ def _deliver(
         return 0
 
     period_label = f"Post-Draft {period}"
+    deep_link = f"xomper://ai-review/post-draft/{period}"
     email_tasks: list[tuple[str, str, str, str]] = []
     push_user_ids: list[str] = []
 
@@ -469,7 +522,7 @@ def _deliver(
             title,
             body,
             PUSH_CATEGORY,
-            {"url": DEEP_LINK, "period": period},
+            {"url": deep_link, "period": period},
         )
 
     return len(recipients)

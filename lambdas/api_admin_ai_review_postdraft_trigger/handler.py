@@ -13,13 +13,20 @@ Body:
     "sleeper_user_id": "abc123",     // required — admin gate identity
     "email": "user@example.com",     // optional fallback identity
     "dry_run": true,                 // optional, default true
-    "force": false                   // optional, default false
+    "force": false,                  // optional, default false
+    "target_year": 2024              // optional — backfill mode: walk
+                                     //   previous_league_id from active
+                                     //   league until season == str(year),
+                                     //   then generate against THAT draft.
+                                     //   Default None = current draft.
 }
 
 Behavior:
 - 200 + body on success (delivery counts + token usage + report row).
 - 400 on bad input.
 - 403 when the caller is not an admin.
+- 404 when target_year is set but no historical league with that
+  season is reachable via previous_league_id.
 - 409 when a report already exists and `force=false`.
 - 412 when the Sleeper draft is not yet complete.
 - 502 when Anthropic / Sleeper external calls fail terminally.
@@ -61,6 +68,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     dry_run = _coerce_bool(body.get("dry_run"), default=True)
     force = _coerce_bool(body.get("force"), default=False)
+    target_year = _coerce_int(body.get("target_year"))
     created_by = admin_user.get("sleeper_user_id") or admin_user.get("id")
 
     try:
@@ -68,6 +76,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             dry_run=dry_run,
             force=force,
             created_by_user_id=created_by,
+            target_year=target_year,
         )
     except ReportAlreadyExistsError as err:
         err.log_error()
@@ -106,8 +115,21 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "delivery_count": result["delivery_count"],
             "model": result["model"],
             "token_usage": result["token_usage"],
+            "period": result.get("period"),
+            "target_year": result.get("target_year"),
         }
     )
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Cast API GW body integers (which sometimes arrive as strings)
+    to int. Returns None on failure or when omitted."""
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _coerce_bool(value: Any, *, default: bool) -> bool:

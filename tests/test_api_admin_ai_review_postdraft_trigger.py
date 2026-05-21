@@ -124,13 +124,47 @@ def patched_orchestrator(monkeypatch: pytest.MonkeyPatch):
         lambda: state["active_league"],
     )
 
+    # Multi-season chain for backfill tests: LEAGUE_ID (2026) ->
+    # PRIOR123 (2025) -> HIST2024 (2024). Each league has its own
+    # draft_id so the orchestrator can run end-to-end against any
+    # historical season.
+    league_chain: dict[str, dict[str, Any]] = {
+        "LEAGUE_ID": {
+            "league_id": "LEAGUE_ID",
+            "name": "CLT DYNASTY",
+            "draft_id": "DRAFT123",
+            "previous_league_id": "PRIOR123",
+            "season": "2026",
+        },
+        "PRIOR123": {
+            "league_id": "PRIOR123",
+            "name": "CLT DYNASTY (2025)",
+            "draft_id": "DRAFT2025",
+            "previous_league_id": "HIST2024",
+            "season": "2025",
+        },
+        "HIST2024": {
+            "league_id": "HIST2024",
+            "name": "CLT DYNASTY (2024)",
+            "draft_id": "DRAFT2024",
+            "previous_league_id": None,
+            "season": "2024",
+        },
+    }
+    state["league_chain"] = league_chain
+
     def _get_league(league_id: str) -> dict[str, Any]:
-        if league_id == "PRIOR123":
-            return {
-                "league_id": "PRIOR123",
-                "name": "CLT DYNASTY (2025)",
-                "season": "2025",
-            }
+        if league_id in league_chain:
+            entry = dict(league_chain[league_id])
+            # Honor the per-test override on the active league's
+            # previous_league_id so the existing prior-standings test
+            # still works.
+            if league_id == "LEAGUE_ID":
+                entry["previous_league_id"] = state["prior_league_id"]
+            return entry
+        # Default: return a generic league dict so legacy tests still
+        # behave (covers the case where the existing prior_league_id
+        # state hook points elsewhere).
         return {
             "league_id": league_id,
             "name": "CLT DYNASTY",
@@ -140,28 +174,39 @@ def patched_orchestrator(monkeypatch: pytest.MonkeyPatch):
         }
 
     monkeypatch.setattr(orchestrator, "get_sleeper_league", _get_league)
-    monkeypatch.setattr(
-        orchestrator,
-        "get_sleeper_draft",
-        lambda draft_id: {"draft_id": draft_id, "status": state["draft_status"]},
-    )
-    monkeypatch.setattr(
-        orchestrator,
-        "get_sleeper_draft_picks",
-        lambda draft_id: _make_picks(),
-    )
-    monkeypatch.setattr(
-        orchestrator,
-        "get_sleeper_league_users",
-        lambda league_id: _make_sleeper_users(),
-    )
-    monkeypatch.setattr(
-        orchestrator,
-        "get_sleeper_league_rosters",
-        lambda league_id: _make_rosters(),
-    )
+    state["draft_calls"] = []
+    state["picks_calls"] = []
+    state["users_calls"] = []
+    state["rosters_calls"] = []
+
+    def _get_draft(draft_id: str) -> dict[str, Any]:
+        state["draft_calls"].append(draft_id)
+        return {"draft_id": draft_id, "status": state["draft_status"]}
+
+    def _get_picks(draft_id: str) -> list[dict[str, Any]]:
+        state["picks_calls"].append(draft_id)
+        return _make_picks()
+
+    def _get_users(league_id: str) -> list[dict[str, Any]]:
+        state["users_calls"].append(league_id)
+        return _make_sleeper_users()
+
+    def _get_rosters(league_id: str) -> list[dict[str, Any]]:
+        state["rosters_calls"].append(league_id)
+        return _make_rosters()
+
+    monkeypatch.setattr(orchestrator, "get_sleeper_draft", _get_draft)
+    monkeypatch.setattr(orchestrator, "get_sleeper_draft_picks", _get_picks)
+    monkeypatch.setattr(orchestrator, "get_sleeper_league_users", _get_users)
+    monkeypatch.setattr(orchestrator, "get_sleeper_league_rosters", _get_rosters)
 
     def _prior(league_id: str) -> str | None:
+        # Honor the league_chain so historical prior-standings walks
+        # terminate naturally for the 2024 backfill tests.
+        if league_id in league_chain:
+            if league_id == "LEAGUE_ID":
+                return state["prior_league_id"]
+            return league_chain[league_id].get("previous_league_id")
         return state["prior_league_id"]
 
     monkeypatch.setattr(orchestrator, "get_previous_league_id", _prior)
@@ -610,6 +655,172 @@ class TestHandler:
         body = json.loads(response["body"])
         # Sane safe defaults: dry-run on.
         assert body["dry_run"] is True
+
+
+# ---------------------------------------------------------------------------
+# Backfill — target_year override
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorTargetYear:
+    """Covers F1 backfill: target_year walks the previous_league_id
+    chain to a specific season and runs the pipeline against THAT
+    league's draft + rosters + users."""
+
+    def test_target_year_2024_walks_chain_to_historical_league(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_postdraft_trigger.orchestrator import run
+
+        result = run(dry_run=True, force=False, target_year=2024)
+
+        assert result["status"] == "dry_run_sent"
+        assert result["period"] == "2024"
+        assert result["target_year"] == 2024
+        # Draft data fetched against the 2024 draft id.
+        assert "DRAFT2024" in patched_orchestrator["draft_calls"]
+        # Rosters / users fetched against HIST2024.
+        assert "HIST2024" in patched_orchestrator["rosters_calls"]
+        assert "HIST2024" in patched_orchestrator["users_calls"]
+        # Report row persisted with the historical period.
+        write = patched_orchestrator["writes"][0]
+        assert write["period"] == "2024"
+        assert write["metadata"]["target_year"] == 2024
+        assert write["metadata"]["operating_league_id"] == "HIST2024"
+
+    def test_target_year_2025_walks_one_hop(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_postdraft_trigger.orchestrator import run
+
+        result = run(dry_run=True, force=False, target_year=2025)
+
+        assert result["period"] == "2025"
+        assert "DRAFT2025" in patched_orchestrator["draft_calls"]
+        assert "PRIOR123" in patched_orchestrator["rosters_calls"]
+        write = patched_orchestrator["writes"][0]
+        assert write["period"] == "2025"
+
+    def test_target_year_nonexistent_raises_not_found(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_postdraft_trigger.orchestrator import run
+        from lambdas.common.errors import NotFoundError
+
+        with pytest.raises(NotFoundError):
+            run(dry_run=True, force=False, target_year=9999)
+        # No write happened.
+        assert patched_orchestrator["writes"] == []
+
+    def test_idempotency_per_target_year_period(
+        self, patched_orchestrator
+    ) -> None:
+        """Existing 2024 report should not block a 2025 backfill."""
+        from lambdas.api_admin_ai_review_postdraft_trigger.orchestrator import run
+
+        patched_orchestrator["existing_report"] = {
+            "league_id": "LEAGUE_ID",
+            "report_type": "postDraft",
+            "period": "2024",
+            "created_at": "2026-05-19T00:00:00Z",
+        }
+        # Different period (2025) — should NOT raise even with
+        # force=False.
+        result = run(dry_run=True, force=False, target_year=2025)
+        assert result["period"] == "2025"
+
+    def test_idempotency_same_target_year_still_409s(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_postdraft_trigger.orchestrator import run
+        from lambdas.common.errors import ReportAlreadyExistsError
+
+        patched_orchestrator["existing_report"] = {
+            "league_id": "LEAGUE_ID",
+            "report_type": "postDraft",
+            "period": "2024",
+            "created_at": "2026-05-19T00:00:00Z",
+        }
+        with pytest.raises(ReportAlreadyExistsError):
+            run(dry_run=True, force=False, target_year=2024)
+
+    def test_default_target_year_none_unchanged(
+        self, patched_orchestrator
+    ) -> None:
+        """Existing behavior (no target_year) still writes period=2026."""
+        from lambdas.api_admin_ai_review_postdraft_trigger.orchestrator import run
+
+        result = run(dry_run=True, force=False)
+        assert result["period"] == "2026"
+        assert result["target_year"] is None
+        write = patched_orchestrator["writes"][0]
+        assert write["period"] == "2026"
+        # Fetches relative to the active league.
+        assert "DRAFT123" in patched_orchestrator["draft_calls"]
+        assert "LEAGUE_ID" in patched_orchestrator["rosters_calls"]
+
+
+class TestHandlerTargetYear:
+    """API handler integration: target_year body param."""
+
+    def test_handler_target_year_2024_returns_200_with_period(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lambdas.api_admin_ai_review_postdraft_trigger import handler as h
+
+        monkeypatch.setattr(
+            h, "require_admin", lambda event, body: {"sleeper_user_id": ADMIN_ID}
+        )
+        response = h.handler(
+            _api_event(body={"dry_run": True, "target_year": 2024}),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        import json
+
+        body = json.loads(response["body"])
+        assert body["Success"] is True
+        assert body["period"] == "2024"
+        assert body["target_year"] == 2024
+
+    def test_handler_target_year_string_coerced(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """API GW sometimes delivers numbers as strings — coerce."""
+        from lambdas.api_admin_ai_review_postdraft_trigger import handler as h
+
+        monkeypatch.setattr(
+            h, "require_admin", lambda event, body: {"sleeper_user_id": ADMIN_ID}
+        )
+        response = h.handler(
+            _api_event(body={"dry_run": True, "target_year": "2025"}),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        import json
+
+        body = json.loads(response["body"])
+        assert body["period"] == "2025"
+
+    def test_handler_target_year_not_found_returns_404(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lambdas.api_admin_ai_review_postdraft_trigger import handler as h
+
+        monkeypatch.setattr(
+            h, "require_admin", lambda event, body: {"sleeper_user_id": ADMIN_ID}
+        )
+        response = h.handler(
+            _api_event(body={"dry_run": True, "target_year": 9999}),
+            context=None,
+        )
+        assert response["statusCode"] == 404
 
 
 # ---------------------------------------------------------------------------

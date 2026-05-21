@@ -21,8 +21,9 @@ Behavior contract:
   is rarely what we want (a Tuesday afternoon glitch shouldn't
   flap the cron — recovery is via the admin trigger).
 - For testing / backfill, the event may carry `{"week": N,
-  "dry_run": true, "force": true, "use_previous_season": false}` —
-  same shape the admin trigger accepts.
+  "dry_run": true, "force": true, "seasons_back": 0}` — same
+  shape the admin trigger accepts. `use_previous_season` is also
+  accepted as a deprecated alias for `seasons_back=1`.
 """
 from __future__ import annotations
 
@@ -48,6 +49,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     week_override = _coerce_int(overrides.get("week"))
     dry_run = _coerce_bool(overrides.get("dry_run"), default=False)
     force = _coerce_bool(overrides.get("force"), default=False)
+    seasons_back_raw = _coerce_int(overrides.get("seasons_back"))
+    seasons_back = seasons_back_raw if seasons_back_raw is not None else 0
+    # Back-compat alias — forwarded to the orchestrator which logs a
+    # deprecation warning when truthy. Default False keeps the cron
+    # call shape stable for existing snapshot tests.
     use_previous_season = _coerce_bool(
         overrides.get("use_previous_season"), default=False
     )
@@ -57,6 +63,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             week=week_override,
             dry_run=dry_run,
             force=force,
+            seasons_back=seasons_back,
             use_previous_season=use_previous_season,
         )
     except Exception as err:  # noqa: BLE001 — cron must not flap

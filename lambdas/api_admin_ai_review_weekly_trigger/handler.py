@@ -15,7 +15,15 @@ Body:
     "week": 4,                        // optional — defaults to current
     "dry_run": true,                 // optional, default true
     "force": false,                  // optional, default false
-    "use_previous_season": false     // optional, default false
+    "seasons_back": 0,               // optional, default 0 — walk
+                                     //   previous_league_id N times
+                                     //   from the active league
+                                     //   before fetching matchups.
+                                     //   1 = prior season, 2 = two
+                                     //   seasons ago, etc.
+    "use_previous_season": false     // DEPRECATED — alias for
+                                     //   seasons_back=1. Logs a
+                                     //   warning when used.
 }
 
 Behavior:
@@ -68,6 +76,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     week = _coerce_int(body.get("week"))
     dry_run = _coerce_bool(body.get("dry_run"), default=True)
     force = _coerce_bool(body.get("force"), default=False)
+    seasons_back_raw = _coerce_int(body.get("seasons_back"))
+    seasons_back = seasons_back_raw if seasons_back_raw is not None else 0
+    # Back-compat alias — forwarded to the orchestrator which logs
+    # a deprecation warning when truthy AND seasons_back==0.
     use_previous_season = _coerce_bool(
         body.get("use_previous_season"), default=False
     )
@@ -78,6 +90,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             week=week,
             dry_run=dry_run,
             force=force,
+            seasons_back=seasons_back,
             use_previous_season=use_previous_season,
             created_by_user_id=created_by,
         )
@@ -113,6 +126,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "memory_count_in": result.get("memory_count_in"),
             "memory_count_out": result.get("memory_count_out"),
             "envelope_parsed": result.get("envelope_parsed"),
+            "seasons_back": result.get("seasons_back"),
             "use_previous_season": result.get("use_previous_season"),
         }
     )

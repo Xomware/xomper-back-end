@@ -58,6 +58,7 @@ from lambdas.common.errors import (
     ValidationError,
 )
 from lambdas.common.logger import get_logger
+from lambdas.common.season_resolver import resolve_historical_league
 from lambdas.common.ses_helper import send_emails_concurrently
 from lambdas.common.sleeper_helper import (
     get_nfl_state,
@@ -97,6 +98,7 @@ def run_weekly(
     week: int | None = None,
     dry_run: bool = True,
     force: bool = False,
+    seasons_back: int = 0,
     use_previous_season: bool = False,
     created_by_user_id: str | None = None,
 ) -> dict[str, Any]:
@@ -111,10 +113,19 @@ def run_weekly(
         force: When False (default), an existing report for this
             (league, "weekly", period) raises
             `ReportAlreadyExistsError`. When True, overwrites.
-        use_previous_season: For dry-run calibration against last
-            year's matchup data. Swaps Sleeper fetches to the prior
-            league via `previous_league_id`. The cron NEVER sets
-            this; only the admin trigger does.
+        seasons_back: How many times to walk `previous_league_id`
+            from the active league. 0 (default) = current season,
+            1 = prior, 2 = two seasons ago, etc. Used for historical
+            backfill. The matchups + rosters + users are all fetched
+            from the resolved historical league, and the period is
+            built from THAT league's `season` field
+            (e.g. `2024W05`). Idempotency keys are still
+            (active league_id, "weekly", historical period).
+        use_previous_season: DEPRECATED alias for `seasons_back=1`.
+            When passed (truthy), maps to seasons_back=1 and logs a
+            deprecation warning. Kept for back-compat with the F3
+            plan + any in-flight clients. New callers should use
+            `seasons_back` instead.
         created_by_user_id: Sleeper user_id of the caller (admin
             trigger) or None (cron). Stamped into metadata for
             auditability.
@@ -122,15 +133,43 @@ def run_weekly(
     Returns:
         Dict carrying `status`, `report`, `dry_run`, `delivery_count`,
         `model`, `token_usage`, `week`, `period`, `memory_count_in`,
-        `memory_count_out`. Both handlers wrap this for their
-        responses.
+        `memory_count_out`, `seasons_back`, `use_previous_season`
+        (back-compat). Both handlers wrap this for their responses.
 
     Raises:
         ReportAlreadyExistsError: Existing row + force=False.
-        NotFoundError: No active whitelisted league configured.
-        ValidationError: Bad week input.
+        NotFoundError: No active whitelisted league configured, or
+            `seasons_back` exceeds the available chain depth.
+        ValidationError: Bad week or seasons_back input.
         ClaudeAPIError: Anthropic call failed after retries.
     """
+    # Back-compat: use_previous_season=True is equivalent to
+    # seasons_back=1. Only honor the alias when the caller didn't
+    # also pass a non-default seasons_back.
+    if use_previous_season:
+        if seasons_back == 0:
+            log.warning(
+                "weekly_orchestrator: `use_previous_season` is "
+                "deprecated; use `seasons_back=1` instead"
+            )
+            seasons_back = 1
+        else:
+            log.warning(
+                "weekly_orchestrator: both `use_previous_season` and "
+                f"`seasons_back={seasons_back}` provided; honoring "
+                "`seasons_back`"
+            )
+
+    if seasons_back < 0:
+        raise ValidationError(
+            message=(
+                f"seasons_back must be >= 0, got {seasons_back}"
+            ),
+            handler="notif_ai_review_weekly",
+            function="run_weekly",
+            field="seasons_back",
+        )
+
     league_row = get_active_whitelisted_league()
     if not league_row:
         raise NotFoundError(
@@ -161,9 +200,10 @@ def run_weekly(
     resolved_week = _resolve_week(week=week, nfl_week=nfl_week_raw)
 
     # --- pre-flight ----------------------------------------------------------
-    # For previous-season dry-runs we deliberately bypass the
-    # season-type gate (calibrating against finished 2025 data).
-    if not use_previous_season:
+    # For backfill against finished seasons we deliberately bypass
+    # the season-type gate (calibrating / archiving against
+    # completed data).
+    if seasons_back == 0:
         if season_type and season_type not in AI_REVIEW_WEEKLY_OK_SEASON_TYPES:
             log.info(
                 f"notif_ai_review_weekly: season_type={season_type!r} "
@@ -183,17 +223,27 @@ def run_weekly(
                 "memory_count_out": 0,
                 "skipped": True,
                 "reason": f"season_type={season_type!r}",
+                "seasons_back": seasons_back,
+                "use_previous_season": seasons_back == 1,
             }
 
     # --- data fetch source league --------------------------------------------
     matchup_league_id = league_id
-    if use_previous_season:
-        prior_id = get_previous_league_id(league_id)
+    if seasons_back > 0:
+        historical_league = resolve_historical_league(
+            league_id,
+            seasons_back,
+            league_fetcher=get_sleeper_league,
+        )
+        prior_id = (
+            historical_league.get("league_id")
+            or str(historical_league.get("league_id") or "")
+        )
         if not prior_id:
             raise NotFoundError(
                 message=(
-                    "use_previous_season=True but the active league "
-                    "has no previous_league_id linked"
+                    f"Resolved historical league for seasons_back="
+                    f"{seasons_back} is missing a league_id"
                 ),
                 handler="notif_ai_review_weekly",
                 function="run_weekly",
@@ -201,8 +251,9 @@ def run_weekly(
             )
         matchup_league_id = prior_id
         log.info(
-            f"notif_ai_review_weekly: dry-run calibration vs "
-            f"previous league {prior_id} (week {resolved_week})"
+            f"notif_ai_review_weekly: backfill seasons_back="
+            f"{seasons_back} -> league {prior_id} (week "
+            f"{resolved_week})"
         )
 
     league = get_sleeper_league(matchup_league_id)
@@ -275,7 +326,10 @@ def run_weekly(
     metadata: dict[str, Any] = {
         "dry_run": dry_run,
         "force": force,
-        "use_previous_season": use_previous_season,
+        "seasons_back": seasons_back,
+        # Back-compat tag — present for any downstream consumers that
+        # read this field. True when seasons_back >= 1.
+        "use_previous_season": seasons_back >= 1,
         "model": AI_REVIEW_DEFAULT_MODEL,
         "prompt_version": AI_REVIEW_WEEKLY_PROMPT_VERSION,
         "token_usage": token_usage,
@@ -380,7 +434,10 @@ def run_weekly(
         "memory_count_in": len(prior_memories),
         "memory_count_out": written_memories,
         "envelope_parsed": parse_ok,
-        "use_previous_season": use_previous_season,
+        "seasons_back": seasons_back,
+        # Back-compat surface so the API response shape stays stable
+        # for clients still reading `use_previous_season`.
+        "use_previous_season": seasons_back >= 1,
     }
 
 
