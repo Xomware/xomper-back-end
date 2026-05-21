@@ -30,8 +30,16 @@ DEVICE_TOKENS_TABLE = os.environ.get("DEVICE_TOKENS_TABLE", "xomper-device-token
 AI_REPORTS_TABLE = os.environ.get("AI_REPORTS_TABLE", "xomper-ai-reports")
 AI_REVIEW_PROMPT_VERSION = os.environ.get("AI_REVIEW_PROMPT_VERSION", "v1")
 AI_REVIEW_POSTDRAFT_PERIOD = "2026"
+AI_REVIEW_PRESEASON_PERIOD = "2026-PRESEASON"
+AI_REVIEW_PRESEASON_PROMPT_VERSION = os.environ.get(
+    "AI_REVIEW_PRESEASON_PROMPT_VERSION", "f2-preseason-2026-05-21"
+)
 AI_REVIEW_DEFAULT_MODEL = "claude-haiku-4-5"
 AI_REVIEW_MAX_TOKENS = 4000
+AI_REVIEW_PRESEASON_MAX_TOKENS = 6000
+# NFL state.season_type values that mean "regular season has not yet
+# started" — used as the preseason pre-flight gate.
+AI_REVIEW_PRESEASON_OK_SEASON_TYPES = ("pre", "off")
 
 # Admin user id for dry-run delivery (Dominick).
 ADMIN_DOMINICK_USER_ID = "594625531702460416"

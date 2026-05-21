@@ -190,6 +190,34 @@ class DraftNotCompleteError(XomperError):
         )
 
 
+class PreseasonWindowPassedError(XomperError):
+    """Raised when the preseason AI Review trigger fires after the
+    regular-season window has already started (i.e. NFL state's
+    `season_type` is `regular` or `post`). Surfaces as HTTP 412
+    (Precondition Failed) to the admin client."""
+
+    def __init__(
+        self,
+        message: str = "Preseason window has already passed",
+        handler: str = "notif_ai_review_preseason",
+        function: str = "run",
+        nfl_season: Optional[str] = None,
+        season_type: Optional[str] = None,
+    ):
+        details: dict = {}
+        if nfl_season:
+            details["nfl_season"] = nfl_season
+        if season_type:
+            details["season_type"] = season_type
+        super().__init__(
+            message=message,
+            handler=handler,
+            function=function,
+            status=412,
+            details=details,
+        )
+
+
 class ReportAlreadyExistsError(XomperError):
     """Raised when an AI Review report already exists for a given
     `(league_id, report_type, period)` and the caller did not pass

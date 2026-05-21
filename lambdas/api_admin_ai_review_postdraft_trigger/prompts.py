@@ -15,7 +15,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from lambdas.common.league_lore import LEAGUE_LORE, ManagerProfile
+from lambdas.common.lore_prompt import (
+    LORE_TEXT as _LORE_TEXT,
+    build_lore_block,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -50,45 +53,12 @@ Output format:
 
 
 # ---------------------------------------------------------------------------
-# System prompt — block 2 (lore, rendered at module load)
+# System prompt — block 2 (lore, factored to lambdas/common/lore_prompt.py)
 # ---------------------------------------------------------------------------
 
-
-def _render_profile(user_id: str, profile: ManagerProfile) -> str:
-    """Render a single ManagerProfile into the lore-section markdown
-    fragment the prompt expects."""
-    nicknames = ", ".join(profile.nicknames) if profile.nicknames else "(none)"
-    teams = ", ".join(profile.favorite_teams) if profile.favorite_teams else "(none)"
-    school = profile.school or "(unknown)"
-    stories = (
-        " | ".join(profile.notable_stories)
-        if profile.notable_stories
-        else "(none)"
-    )
-    life = " | ".join(profile.life_events) if profile.life_events else "(none)"
-    return (
-        f"### {profile.display_name}  (sleeper user_id: {user_id})\n"
-        f"- Nicknames: {nicknames}\n"
-        f"- Favorite teams: {teams}\n"
-        f"- School: {school}\n"
-        f"- Notable stories: {stories}\n"
-        f"- Life events: {life}\n"
-    )
-
-
-def _render_league_lore() -> str:
-    """Render the full LEAGUE_LORE map into the static lore block."""
-    rendered = "\n".join(
-        _render_profile(uid, profile) for uid, profile in LEAGUE_LORE.items()
-    )
-    return (
-        "LEAGUE LORE — the 12 managers and what to know about them. "
-        "Use this as the source of truth for any joke that references a person.\n\n"
-        f"{rendered}"
-    )
-
-
-SYSTEM_PROMPT_LORE = _render_league_lore()
+# Re-exported so callers + tests that have been importing the lore
+# constant from this module continue to work after the F2 refactor.
+SYSTEM_PROMPT_LORE = _LORE_TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -108,11 +78,7 @@ def build_system_blocks() -> list[dict[str, Any]]:
             "text": SYSTEM_PROMPT_TONE,
             "cache_control": {"type": "ephemeral"},
         },
-        {
-            "type": "text",
-            "text": SYSTEM_PROMPT_LORE,
-            "cache_control": {"type": "ephemeral"},
-        },
+        build_lore_block(),
     ]
 
 
