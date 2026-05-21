@@ -168,6 +168,51 @@ class SleeperAPIError(XomperError):
         )
 
 
+class DraftNotCompleteError(XomperError):
+    """Raised when the post-draft AI Review trigger fires before the
+    Sleeper draft has reached `status == complete`. Surfaces as HTTP
+    412 (Precondition Failed) to the admin client."""
+
+    def __init__(
+        self,
+        message: str = "Sleeper draft is not yet complete",
+        handler: str = "notif_ai_review_postdraft",
+        function: str = "run",
+        draft_status: Optional[str] = None,
+    ):
+        details = {"draft_status": draft_status} if draft_status else {}
+        super().__init__(
+            message=message,
+            handler=handler,
+            function=function,
+            status=412,
+            details=details,
+        )
+
+
+class ReportAlreadyExistsError(XomperError):
+    """Raised when an AI Review report already exists for a given
+    `(league_id, report_type, period)` and the caller did not pass
+    `force=True`. Surfaces as HTTP 409 (Conflict) so the admin client
+    can flip its button label to 'Regenerate (force)'."""
+
+    def __init__(
+        self,
+        message: str = "Report already exists",
+        handler: str = "notif_ai_review_postdraft",
+        function: str = "run",
+        existing: Optional[dict] = None,
+    ):
+        details = {"existing": existing} if existing else {}
+        super().__init__(
+            message=message,
+            handler=handler,
+            function=function,
+            status=409,
+            details=details,
+        )
+
+
 class ClaudeAPIError(XomperError):
     """Raised when Anthropic / Claude API calls fail terminally
     (after retries are exhausted, or on non-retriable errors)."""

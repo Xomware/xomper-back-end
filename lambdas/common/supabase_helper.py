@@ -12,6 +12,7 @@ existing lazy-load pattern. SSM paths:
   /<app>/api/SUPABASE_URL
   /<app>/api/SUPABASE_SERVICE_KEY
 """
+from __future__ import annotations
 
 from typing import Any
 import requests
