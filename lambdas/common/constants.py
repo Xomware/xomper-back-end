@@ -26,6 +26,10 @@ XOMPER_URL = "https://xomper.xomware.com"
 SNS_PLATFORM_APP_ARN = os.environ.get("SNS_PLATFORM_APP_ARN", "")
 DEVICE_TOKENS_TABLE = os.environ.get("DEVICE_TOKENS_TABLE", "xomper-device-tokens")
 
+# AI Review (Anthropic / Claude)
+AI_REPORTS_TABLE = os.environ.get("AI_REPORTS_TABLE", "xomper-ai-reports")
+AI_REVIEW_PROMPT_VERSION = os.environ.get("AI_REVIEW_PROMPT_VERSION", "v1")
+
 # LOGO URL
 LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-logo.jpg"
 BANNER_LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-banner.jpg"

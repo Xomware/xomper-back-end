@@ -168,6 +168,27 @@ class SleeperAPIError(XomperError):
         )
 
 
+class ClaudeAPIError(XomperError):
+    """Raised when Anthropic / Claude API calls fail terminally
+    (after retries are exhausted, or on non-retriable errors)."""
+
+    def __init__(
+        self,
+        message: str,
+        handler: str = "claude_helper",
+        function: str = "generate",
+        model: Optional[str] = None,
+    ):
+        details = {"model": model} if model else {}
+        super().__init__(
+            message=message,
+            handler=handler,
+            function=function,
+            status=502,
+            details=details,
+        )
+
+
 class EmailError(XomperError):
     """Raised when email processing fails."""
 
