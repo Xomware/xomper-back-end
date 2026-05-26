@@ -116,6 +116,21 @@ class TestWriteReport:
                 body_markdown="",
             )
 
+    def test_writes_mock_type(self, dynamo_table) -> None:
+        """`mock` is read-only in prod (backfilled directly), but the
+        store must accept it so the same validation path used by
+        read endpoints permits the type."""
+        store = dynamo_table
+        item = store.write_report(
+            league_id="L1",
+            report_type="mock",
+            period="2026-bpa",
+            body_markdown="# mock bpa",
+            metadata={"prompt_version": "mock-v1"},
+        )
+        assert item["sk"] == "REPORT#mock#2026-bpa"
+        assert item["report_type"] == "mock"
+
     def test_empty_league_id_raises(self, dynamo_table) -> None:
         store = dynamo_table
         from lambdas.common.errors import ValidationError
@@ -155,6 +170,7 @@ class TestGetLatest:
         _put_report(store, "L1", "weekly", "2026W01")
         _put_report(store, "L1", "preseason", "2026-PRE")
         _put_report(store, "L1", "postDraft", "2026-POSTDRAFT")
+        _put_report(store, "L1", "mock", "2026-bpa")
 
         weekly = store.get_latest("L1", "weekly")
         assert weekly is not None
@@ -163,6 +179,11 @@ class TestGetLatest:
         preseason = store.get_latest("L1", "preseason")
         assert preseason is not None
         assert preseason["report_type"] == "preseason"
+
+        mock = store.get_latest("L1", "mock")
+        assert mock is not None
+        assert mock["report_type"] == "mock"
+        assert mock["period"] == "2026-bpa"
 
     def test_no_report_returns_none(self, dynamo_table) -> None:
         store = dynamo_table
