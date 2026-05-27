@@ -171,3 +171,82 @@ def build_email_payload(
         "html_body": html_body,
         "text_body": text_body,
     }
+
+
+# ---------------------------------------------------------------------------
+# Preview helper (Admin Portal F2)
+# ---------------------------------------------------------------------------
+#
+# The admin pre-broadcast preview surface needs the *same* rendered email
+# every recipient would receive on a real broadcast — single render path
+# so the preview can't drift from `send_emails_concurrently`.
+#
+# Caps applied here (NOT in `build_email_payload` — the wire payload to
+# SES stays full-fidelity):
+#   * `text_body`         -> first 4096 chars (≈ 4KB hard cap)
+#   * `html_body`         -> dropped; replaced with `html_body_excerpt`
+#                            of the first 500 chars only
+#
+# 12 previews × ~4.5KB ≈ 54KB worst case — well under API GW's 10MB limit.
+
+PREVIEW_TEXT_BODY_CAP = 4096
+PREVIEW_HTML_EXCERPT_CAP = 500
+
+
+def render_preview_for_user(
+    user: dict[str, Any],
+    report_type: str,
+    body_markdown: str,
+    period_label: str,
+    league_name: str | None = None,
+) -> dict[str, Any]:
+    """Render an email preview row for a single whitelisted user.
+
+    Wraps `build_email_payload` so the preview shape is produced by the
+    exact same template path used by the real broadcast — no drift risk.
+
+    Args:
+        user: A row from `get_active_whitelisted_users()`. Must carry
+            `sleeper_user_id`, `email`, and `display_name`.
+            `sleeper_username` is used as a fallback first-name source.
+        report_type: One of `postDraft` | `preseason` | `weekly`.
+        body_markdown: The Claude-produced report body.
+        period_label: Human-readable period (e.g. "Week 4",
+            "Preseason 2026-PRESEASON", "Post-Draft 2026"). Threaded
+            into the subject + section title via `build_email_payload`.
+        league_name: Optional league name to badge inside the email.
+
+    Returns:
+        Dict with `recipient_user_id`, `recipient_email`, `display_name`,
+        `subject`, `text_body` (≤4096 chars), and `html_body_excerpt`
+        (≤500 chars). The full `html_body` is intentionally dropped to
+        keep the response payload mobile-friendly.
+    """
+    email = user.get("email") or ""
+    display_name = user.get("display_name") or ""
+    first_name = (
+        display_name
+        or user.get("sleeper_username")
+        or "there"
+    )
+
+    payload = build_email_payload(
+        user_email=email,
+        user_first_name=first_name,
+        report_type=report_type,
+        body_markdown=body_markdown,
+        period_label=period_label,
+        league_name=league_name,
+    )
+
+    text_body = payload.get("text_body") or ""
+    html_body = payload.get("html_body") or ""
+
+    return {
+        "recipient_user_id": user.get("sleeper_user_id") or "",
+        "recipient_email": email,
+        "display_name": display_name,
+        "subject": payload.get("subject") or "",
+        "text_body": text_body[:PREVIEW_TEXT_BODY_CAP],
+        "html_body_excerpt": html_body[:PREVIEW_HTML_EXCERPT_CAP],
+    }

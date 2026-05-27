@@ -51,7 +51,10 @@ from lambdas.common.constants import (
     AI_REVIEW_WEEKLY_OK_SEASON_TYPES,
     AI_REVIEW_WEEKLY_PROMPT_VERSION,
 )
-from lambdas.common.email_templates.ai_review import build_email_payload
+from lambdas.common.email_templates.ai_review import (
+    build_email_payload,
+    render_preview_for_user,
+)
 from lambdas.common.errors import (
     NotFoundError,
     ReportAlreadyExistsError,
@@ -225,6 +228,8 @@ def run_weekly(
                 "reason": f"season_type={season_type!r}",
                 "seasons_back": seasons_back,
                 "use_previous_season": seasons_back == 1,
+                # Admin Portal F2 — never previews on the no-op path.
+                "previews": None,
             }
 
     # --- data fetch source league --------------------------------------------
@@ -400,6 +405,21 @@ def run_weekly(
         week=resolved_week,
     )
 
+    # --- previews (Admin Portal F2) ------------------------------------------
+    # Threads the resolved `week` so the subject line reads
+    # "<Name>, your Week N Weekly Review".
+    previews = _build_previews(
+        dry_run=dry_run,
+        body_markdown=body_markdown,
+        league_name=league_name,
+        week=resolved_week,
+    )
+    if previews is not None:
+        print(
+            f"[weekly-trigger] preview generated for {len(previews)} "
+            f"users (dry_run=true, week={resolved_week})"
+        )
+
     # --- stamp broadcast_at on broadcast path --------------------------------
     if not dry_run:
         broadcast_at = datetime.now(timezone.utc).strftime(
@@ -438,6 +458,8 @@ def run_weekly(
         # Back-compat surface so the API response shape stays stable
         # for clients still reading `use_previous_season`.
         "use_previous_season": seasons_back >= 1,
+        # Admin Portal F2 — populated on dry-run only.
+        "previews": previews,
     }
 
 
@@ -755,3 +777,39 @@ def _resolve_recipients(*, dry_run: bool) -> list[dict[str, Any]]:
         )
         return [admin] if admin else []
     return all_users
+
+
+def _build_previews(
+    *,
+    dry_run: bool,
+    body_markdown: str,
+    league_name: str,
+    week: int,
+) -> list[dict[str, Any]] | None:
+    """Render an email preview row per active whitelisted user.
+
+    Returns:
+        On dry-run: list of preview dicts sorted alphabetically by
+        `display_name` (one per active user — typically 12).
+        On real broadcast: `None`.
+    """
+    if not dry_run:
+        return None
+
+    users = get_active_whitelisted_users() or []
+    sorted_users = sorted(
+        users,
+        key=lambda u: (u.get("display_name") or "").lower(),
+    )
+
+    period_label = f"Week {week}"
+    return [
+        render_preview_for_user(
+            user=user,
+            report_type=REPORT_TYPE,
+            body_markdown=body_markdown,
+            period_label=period_label,
+            league_name=league_name,
+        )
+        for user in sorted_users
+    ]
