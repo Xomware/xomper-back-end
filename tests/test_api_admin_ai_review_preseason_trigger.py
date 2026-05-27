@@ -628,3 +628,185 @@ class TestHandler:
         body = json.loads(response["body"])
         # Safe defaults: dry-run on.
         assert body["dry_run"] is True
+
+
+# ---------------------------------------------------------------------------
+# Admin Portal F2 — email previews on dry-run responses
+# ---------------------------------------------------------------------------
+
+
+class TestOrchestratorPreviewsDryRun:
+    """Locks the dry-run preview surface added in Admin Portal F2."""
+
+    def test_dry_run_returns_one_preview_per_active_user(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_preseason_trigger.orchestrator import run
+
+        result = run(dry_run=True, force=False)
+
+        previews = result["previews"]
+        assert isinstance(previews, list)
+        assert len(previews) == 12
+
+    def test_each_preview_has_required_fields(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_preseason_trigger.orchestrator import run
+
+        result = run(dry_run=True, force=False)
+
+        required = {
+            "recipient_user_id",
+            "recipient_email",
+            "display_name",
+            "subject",
+            "text_body",
+            "html_body_excerpt",
+        }
+        for preview in result["previews"]:
+            assert required.issubset(preview.keys())
+            assert "html_body" not in preview
+
+    def test_previews_sorted_alphabetically_by_display_name(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_preseason_trigger.orchestrator import run
+
+        patched_orchestrator["whitelisted_users"] = [
+            {
+                "sleeper_user_id": ADMIN_ID,
+                "email": "zach@example.com",
+                "display_name": "Zach",
+                "sleeper_username": "zach",
+                "is_active": True,
+                "is_admin": True,
+                "id": "row-1",
+            },
+            {
+                "sleeper_user_id": "u2",
+                "email": "adam@example.com",
+                "display_name": "Adam",
+                "sleeper_username": "adam",
+                "is_active": True,
+                "is_admin": False,
+                "id": "row-2",
+            },
+            {
+                "sleeper_user_id": "u3",
+                "email": "mike@example.com",
+                "display_name": "Mike",
+                "sleeper_username": "mike",
+                "is_active": True,
+                "is_admin": False,
+                "id": "row-3",
+            },
+            {
+                "sleeper_user_id": "u4",
+                "email": "beth@example.com",
+                "display_name": "Beth",
+                "sleeper_username": "beth",
+                "is_active": True,
+                "is_admin": False,
+                "id": "row-4",
+            },
+        ]
+
+        result = run(dry_run=True, force=False)
+        names = [p["display_name"] for p in result["previews"]]
+        assert names == ["Adam", "Beth", "Mike", "Zach"]
+
+    def test_text_body_capped_at_4096_chars(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from lambdas.api_admin_ai_review_preseason_trigger import orchestrator
+
+        long_markdown = "X" * 10_000
+
+        def _long_generate(
+            *, prompt, system, model, max_tokens, return_usage=False
+        ):
+            usage = {
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            }
+            if return_usage:
+                return long_markdown, usage
+            return long_markdown
+
+        fake_claude = MagicMock()
+        fake_claude.generate = _long_generate
+        monkeypatch.setattr(orchestrator, "claude_helper", fake_claude)
+
+        result = orchestrator.run(dry_run=True, force=False)
+        for preview in result["previews"]:
+            assert len(preview["text_body"]) <= 4096
+
+    def test_html_body_excerpt_capped_at_500_chars(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_preseason_trigger.orchestrator import run
+
+        result = run(dry_run=True, force=False)
+        for preview in result["previews"]:
+            assert len(preview["html_body_excerpt"]) <= 500
+
+
+class TestOrchestratorPreviewsBroadcast:
+    """Broadcast (dry_run=False) responses must NOT include previews."""
+
+    def test_broadcast_returns_none_previews(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.api_admin_ai_review_preseason_trigger.orchestrator import run
+
+        result = run(dry_run=False, force=True)
+
+        assert result["previews"] is None
+
+
+class TestHandlerPreviews:
+    """End-to-end through the lambda handler."""
+
+    def test_handler_dry_run_response_includes_previews(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import json
+        from lambdas.api_admin_ai_review_preseason_trigger import handler as h
+
+        monkeypatch.setattr(
+            h, "require_admin", lambda event, body: {"sleeper_user_id": ADMIN_ID}
+        )
+        response = h.handler(
+            _api_event(body={"dry_run": True}),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert isinstance(body["previews"], list)
+        assert len(body["previews"]) == 12
+
+    def test_handler_broadcast_response_previews_null(
+        self,
+        patched_orchestrator,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import json
+        from lambdas.api_admin_ai_review_preseason_trigger import handler as h
+
+        monkeypatch.setattr(
+            h, "require_admin", lambda event, body: {"sleeper_user_id": ADMIN_ID}
+        )
+        response = h.handler(
+            _api_event(body={"dry_run": False, "force": True}),
+            context=None,
+        )
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["previews"] is None

@@ -128,6 +128,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "envelope_parsed": result.get("envelope_parsed"),
             "seasons_back": result.get("seasons_back"),
             "use_previous_season": result.get("use_previous_season"),
+            # Admin Portal F2 — present on dry-run, None on broadcast.
+            "previews": result.get("previews"),
         }
     )
 

@@ -37,7 +37,10 @@ from lambdas.common.constants import (
     AI_REVIEW_PRESEASON_PERIOD,
     AI_REVIEW_PRESEASON_PROMPT_VERSION,
 )
-from lambdas.common.email_templates.ai_review import build_email_payload
+from lambdas.common.email_templates.ai_review import (
+    build_email_payload,
+    render_preview_for_user,
+)
 from lambdas.common.errors import (
     NotFoundError,
     PreseasonWindowPassedError,
@@ -232,6 +235,19 @@ def run(
         period=period,
     )
 
+    # 6b. Render previews for the Admin Portal F2 pre-broadcast surface.
+    previews = _build_previews(
+        dry_run=dry_run,
+        body_markdown=markdown,
+        period=period,
+        league_name=league_name,
+    )
+    if previews is not None:
+        print(
+            f"[preseason-trigger] preview generated for {len(previews)} "
+            f"users (dry_run=true)"
+        )
+
     # 7. Stamp broadcast_at on the non-dry-run path
     if not dry_run:
         broadcast_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -256,6 +272,8 @@ def run(
         "delivery_count": delivery_count,
         "model": AI_REVIEW_DEFAULT_MODEL,
         "token_usage": token_usage,
+        # Admin Portal F2 — populated on dry-run only.
+        "previews": previews,
     }
 
 
@@ -479,3 +497,39 @@ def _resolve_recipients(*, dry_run: bool) -> list[dict[str, Any]]:
         )
         return [admin] if admin else []
     return all_users
+
+
+def _build_previews(
+    *,
+    dry_run: bool,
+    body_markdown: str,
+    period: str,
+    league_name: str,
+) -> list[dict[str, Any]] | None:
+    """Render an email preview row per active whitelisted user.
+
+    Returns:
+        On dry-run: list of preview dicts sorted alphabetically by
+        `display_name` (one per active user — typically 12).
+        On real broadcast: `None`.
+    """
+    if not dry_run:
+        return None
+
+    users = get_active_whitelisted_users() or []
+    sorted_users = sorted(
+        users,
+        key=lambda u: (u.get("display_name") or "").lower(),
+    )
+
+    period_label = f"Preseason {period}"
+    return [
+        render_preview_for_user(
+            user=user,
+            report_type=REPORT_TYPE,
+            body_markdown=body_markdown,
+            period_label=period_label,
+            league_name=league_name,
+        )
+        for user in sorted_users
+    ]

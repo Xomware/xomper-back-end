@@ -110,6 +110,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "delivery_count": result["delivery_count"],
             "model": result["model"],
             "token_usage": result["token_usage"],
+            # Admin Portal F2 — present on dry-run, None on broadcast.
+            "previews": result.get("previews"),
         }
     )
 
