@@ -218,6 +218,42 @@ class PreseasonWindowPassedError(XomperError):
         )
 
 
+class DoNotBroadcastError(XomperError):
+    """Raised when an AI Review broadcast path attempts to fan out a
+    report whose `metadata.do_not_broadcast == "true"` flag is set.
+
+    Surfaces as HTTP 409 (Conflict) so the admin client can flip the
+    Broadcast button label and message the user that the flag must be
+    toggled off before sending. Distinct from
+    `ReportAlreadyExistsError` (same status code) so the iOS surface
+    can render a tailored error string.
+    """
+
+    def __init__(
+        self,
+        message: str = (
+            "Report is marked do_not_broadcast. "
+            "Toggle the flag off to broadcast."
+        ),
+        handler: str = "ai_reports_broadcast",
+        function: str = "run",
+        report_type: Optional[str] = None,
+        period: Optional[str] = None,
+    ):
+        details: dict = {}
+        if report_type:
+            details["report_type"] = report_type
+        if period:
+            details["period"] = period
+        super().__init__(
+            message=message,
+            handler=handler,
+            function=function,
+            status=409,
+            details=details,
+        )
+
+
 class ReportAlreadyExistsError(XomperError):
     """Raised when an AI Review report already exists for a given
     `(league_id, report_type, period)` and the caller did not pass

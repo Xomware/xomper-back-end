@@ -196,6 +196,42 @@ class TestGetLatest:
             store.get_latest("L1", "bogus")
 
 
+class TestStampBroadcastAt:
+    """`stamp_broadcast_at` is the canonical helper called by all three
+    broadcast orchestrators (admin-portal F3). Asserts it writes the
+    `broadcast_at` key into the existing `metadata` map with an ISO-
+    8601 UTC string."""
+
+    def test_stamps_broadcast_at_into_metadata(self, dynamo_table) -> None:
+        store = dynamo_table
+        _put_report(
+            store, "L1", "weekly", "2026W04",
+            metadata={"model": "claude-haiku-4-5"},
+        )
+
+        store.stamp_broadcast_at("L1", "weekly", "2026W04")
+
+        updated = store.get_latest("L1", "weekly")
+        assert updated is not None
+        meta = updated.get("metadata") or {}
+        stamp = meta.get("broadcast_at")
+        assert isinstance(stamp, str)
+        # ISO-8601 UTC with trailing Z (matches the existing inline
+        # format) — gates the wire shape so the iOS Date parser keeps
+        # working.
+        assert stamp.endswith("Z")
+        assert "T" in stamp
+        # Pre-existing metadata is preserved through the merge.
+        assert meta["model"] == "claude-haiku-4-5"
+
+    def test_invalid_report_type_raises(self, dynamo_table) -> None:
+        store = dynamo_table
+        from lambdas.common.errors import ValidationError
+
+        with pytest.raises(ValidationError):
+            store.stamp_broadcast_at("L1", "bogus", "2026W04")
+
+
 class TestListRecent:
     def test_newest_first_across_types(self, dynamo_table) -> None:
         store = dynamo_table

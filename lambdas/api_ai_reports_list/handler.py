@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lambdas.common.admin_gate import is_admin
 from lambdas.common.ai_reports_store import REPORT_TYPES, list_recent
 from lambdas.common.errors import handle_errors
 from lambdas.common.logger import get_logger
@@ -82,6 +83,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             status_code=500,
         )
 
+    # Admin-portal F3: non-admin callers never see redacted rows.
+    # Resolved once per request and threaded through the post-query
+    # filter below.
+    caller_is_admin = is_admin(event)
+
+    def _is_redacted(row: dict[str, Any]) -> bool:
+        meta = row.get("metadata") or {}
+        return str(meta.get("is_redacted", "")).lower() == "true"
+
     # When filtering by type we may need to walk a few pages to fill
     # one page of `limit` rows since Dynamo applies `Limit` before
     # the in-process filter. Cap the walk so a sparse type doesn't
@@ -99,13 +109,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
         pages += 1
 
-        if report_type is None:
-            collected.extend(items)
-        else:
-            collected.extend(
-                row for row in items
-                if (row.get("report_type") or "") == report_type
-            )
+        for row in items:
+            # Type filter (when set) AND redact filter (when caller
+            # is not admin).
+            if report_type is not None and (row.get("report_type") or "") != report_type:
+                continue
+            if not caller_is_admin and _is_redacted(row):
+                continue
+            collected.append(row)
 
         if len(collected) >= limit or next_cursor is None:
             break

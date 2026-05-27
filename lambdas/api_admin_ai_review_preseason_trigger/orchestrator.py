@@ -25,7 +25,6 @@ Returns a dict suitable for JSON-encoding in the API response.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
 from lambdas.common import ai_reports_store, claude_helper
@@ -42,6 +41,7 @@ from lambdas.common.email_templates.ai_review import (
     render_preview_for_user,
 )
 from lambdas.common.errors import (
+    DoNotBroadcastError,
     NotFoundError,
     PreseasonWindowPassedError,
     ReportAlreadyExistsError,
@@ -226,7 +226,15 @@ def run(
         metadata=metadata,
     )
 
-    # 6. Deliver
+    # 6. Pre-broadcast DNB check (Admin Portal F3).
+    # Re-read the row right before SES fan-out so admins who flipped
+    # `do_not_broadcast=true` AFTER generation but BEFORE broadcast
+    # still get the abort. Dry-run path skips — locking only matters
+    # for real-broadcast attempts.
+    if not dry_run:
+        _enforce_not_dnb(league_id=league_id, period=period)
+
+    # 7. Deliver
     delivery_count = _deliver(
         dry_run=dry_run,
         league_id=league_id,
@@ -235,7 +243,7 @@ def run(
         period=period,
     )
 
-    # 6b. Render previews for the Admin Portal F2 pre-broadcast surface.
+    # 7b. Render previews for the Admin Portal F2 pre-broadcast surface.
     previews = _build_previews(
         dry_run=dry_run,
         body_markdown=markdown,
@@ -248,20 +256,19 @@ def run(
             f"users (dry_run=true)"
         )
 
-    # 7. Stamp broadcast_at on the non-dry-run path
+    # 8. Stamp broadcast_at on the non-dry-run path AFTER SES success.
     if not dry_run:
-        broadcast_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
-            ai_reports_store.update_metadata(
+            updated = ai_reports_store.stamp_broadcast_at(
                 league_id=league_id,
                 report_type=REPORT_TYPE,
                 period=period,
-                partial={"broadcast_at": broadcast_at},
             )
-            metadata["broadcast_at"] = broadcast_at
-            report_row["metadata"] = metadata
+            if isinstance(updated, dict) and updated.get("metadata"):
+                metadata.update(updated["metadata"])
+                report_row["metadata"] = metadata
         except Exception as err:  # noqa: BLE001 — non-blocking
-            log.warning(f"update_metadata broadcast_at failed: {err}")
+            log.warning(f"stamp_broadcast_at failed: {err}")
 
     status = "dry_run_sent" if dry_run else "broadcast"
     return {
@@ -280,6 +287,32 @@ def run(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _enforce_not_dnb(*, league_id: str, period: str) -> None:
+    """Re-read the just-written report row and raise
+    `DoNotBroadcastError` (HTTP 409) when `metadata.do_not_broadcast`
+    is truthy. Called immediately before SES fan-out on the real-
+    broadcast path only — dry-run delivery is unaffected.
+
+    Cheap: one Dynamo `get_item`. Catches the race where an admin
+    flips DNB on between `write_report` and the broadcast attempt.
+    """
+    fresh = ai_reports_store.get_report(
+        league_id=league_id,
+        report_type=REPORT_TYPE,
+        period=period,
+    )
+    if not fresh:
+        return
+    meta = fresh.get("metadata") or {}
+    flag = meta.get("do_not_broadcast")
+    if flag is True or (isinstance(flag, str) and flag.lower() == "true"):
+        raise DoNotBroadcastError(
+            handler="notif_ai_review_preseason",
+            report_type=REPORT_TYPE,
+            period=period,
+        )
 
 
 def _build_prior_standings(

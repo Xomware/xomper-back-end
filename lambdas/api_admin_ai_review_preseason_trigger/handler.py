@@ -34,6 +34,7 @@ from typing import Any
 
 from lambdas.common.admin_gate import NotAdmin, require_admin
 from lambdas.common.errors import (
+    DoNotBroadcastError,
     PreseasonWindowPassedError,
     ReportAlreadyExistsError,
     XomperError,
@@ -94,6 +95,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 "season_type": err.details.get("season_type"),
             },
             status_code=412,
+        )
+    except DoNotBroadcastError as err:
+        err.log_error()
+        return success_response(
+            {
+                "Success": False,
+                "error": "do_not_broadcast",
+                "Message": err.message,
+            },
+            status_code=409,
         )
     except XomperError as err:
         # ClaudeAPIError / SleeperAPIError / DynamoDBError /
