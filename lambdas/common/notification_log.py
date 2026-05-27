@@ -92,9 +92,15 @@ def log_email(
     handler: Optional[str] = None,
     body_snippet: Optional[str] = None,
     error: Optional[str] = None,
+    template: Optional[str] = None,
 ) -> None:
     """Record a single email send attempt. Called from
     `ses_helper.send_email` after each result.
+
+    The optional `template` kwarg lets callers tag a row with the
+    semantic template name (e.g. `ai_review` for the production
+    broadcast vs `ai_review_test` for admin-portal F1 test sends).
+    Persisted only when truthy so existing rows stay compact.
     """
     day, epoch_ms, short = _now_parts()
     item: dict[str, Any] = {
@@ -115,6 +121,8 @@ def log_email(
         item["handler"] = handler
     if error:
         item["error"] = error
+    if template:
+        item["template"] = template
     _put(item)
 
 

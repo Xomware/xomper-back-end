@@ -7,7 +7,7 @@ Email sending via AWS SES with validation and PII masking.
 import re
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Any, Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -46,7 +46,8 @@ def send_email(
     html_body: str,
     text_body: str,
     tags: Optional[list[dict[str, str]]] = None,
-) -> bool:
+    template: Optional[str] = None,
+) -> dict[str, Any]:
     """
     Send an email via AWS SES.
 
@@ -56,9 +57,19 @@ def send_email(
         html_body: HTML body content
         text_body: Plain text body content
         tags: Optional SES message tags
+        template: Optional semantic template name (e.g. "ai_review_test")
+            persisted on the notification_log row so the admin activity
+            feed + receipts surface can distinguish test sends from
+            production broadcasts. Existing callers that omit this kwarg
+            continue to write rows without a `template` attribute, so
+            no back-compat is broken.
 
     Returns:
-        True on success, False on failure
+        Dict with `success: bool`, `message_id: Optional[str]`,
+        `error: Optional[str]`. Truthy on success — callers that only
+        care about success/failure can still treat the dict as truthy
+        (an empty dict from older paths would be falsy, but we always
+        return a populated dict here).
 
     Raises:
         ValidationError: If to_email is not a valid email address
@@ -89,14 +100,16 @@ def send_email(
             },
             Tags=tags or [],
         )
-        log.info(f"Email sent to {masked}, MessageId: {response.get('MessageId')}")
+        message_id = response.get('MessageId')
+        log.info(f"Email sent to {masked}, MessageId: {message_id}")
         log_email(
             recipient=to_email,
             subject=subject,
             success=True,
             body_snippet=text_body,
+            template=template,
         )
-        return True
+        return {"success": True, "message_id": message_id, "error": None}
     except ClientError as err:
         error = err.response['Error']
         log.error(f"SES error sending to {masked}: {error['Code']} - {error['Message']}")
@@ -105,8 +118,13 @@ def send_email(
             subject=subject,
             success=False,
             error=f"{error['Code']}: {error['Message']}",
+            template=template,
         )
-        return False
+        return {
+            "success": False,
+            "message_id": None,
+            "error": f"{error['Code']}: {error['Message']}",
+        }
     except Exception as err:
         log.error(f"Error sending email to {masked}: {err}")
         log_email(
@@ -114,11 +132,15 @@ def send_email(
             subject=subject,
             success=False,
             error=str(err),
+            template=template,
         )
-        return False
+        return {"success": False, "message_id": None, "error": str(err)}
 
 
-def send_emails_concurrently(email_tasks: list[tuple[str, str, str, str]]) -> tuple[int, int]:
+def send_emails_concurrently(
+    email_tasks: list[tuple[str, str, str, str]],
+    template: Optional[str] = None,
+) -> tuple[int, int]:
     """
     Send multiple emails concurrently using a thread pool.
 
@@ -127,6 +149,8 @@ def send_emails_concurrently(email_tasks: list[tuple[str, str, str, str]]) -> tu
 
     Args:
         email_tasks: List of (to_email, subject, html_body, text_body) tuples
+        template: Optional semantic template name applied to every send
+            in this batch (forwarded to `send_email` → `log_email`).
 
     Returns:
         Tuple of (successes, failures)
@@ -134,9 +158,12 @@ def send_emails_concurrently(email_tasks: list[tuple[str, str, str, str]]) -> tu
     if not email_tasks:
         return 0, 0
 
+    def _run(task: tuple[str, str, str, str]) -> dict[str, Any]:
+        return send_email(*task, template=template)
+
     with ThreadPoolExecutor(max_workers=min(len(email_tasks), 10)) as executor:
-        futures = [executor.submit(send_email, *task) for task in email_tasks]
+        futures = [executor.submit(_run, task) for task in email_tasks]
         results = [f.result() for f in futures]
 
-    successes = sum(1 for r in results if r)
+    successes = sum(1 for r in results if r.get("success"))
     return successes, len(results) - successes
