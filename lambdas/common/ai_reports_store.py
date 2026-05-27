@@ -171,6 +171,40 @@ def write_report(
     return item
 
 
+def get_report(
+    league_id: str,
+    report_type: str,
+    period: str,
+) -> dict[str, Any] | None:
+    """Return a single report by its exact composite key, or `None` if
+    no row exists for that `(league_id, report_type, period)`.
+
+    Used by read-only surfaces that need to look up a specific report
+    without scanning (e.g. admin-portal F1's test-email handler, which
+    accepts a `report_id = "{pk}|{sk}"` from the iOS client and fans
+    a single rendered email out to one whitelisted user).
+
+    This is a `GetItem` — exactly one Dynamo round-trip, no Query
+    overhead.
+    """
+    _validate_report_type(report_type)
+    if not league_id or not period:
+        return None
+
+    try:
+        response = _table().get_item(
+            Key={"pk": _pk(league_id), "sk": _sk(report_type, period)},
+        )
+    except Exception as err:
+        raise DynamoDBError(
+            message=f"get_report failed: {err}",
+            function="get_report",
+            table=AI_REPORTS_TABLE,
+        ) from err
+
+    return response.get("Item")
+
+
 def get_latest(league_id: str, report_type: str) -> dict[str, Any] | None:
     """Return the most recent report for the given league + type, or
     None if no report exists yet.
