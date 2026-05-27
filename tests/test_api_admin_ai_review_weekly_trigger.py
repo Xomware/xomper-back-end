@@ -279,9 +279,30 @@ def patched_orchestrator(monkeypatch: pytest.MonkeyPatch):
         )
         return {}
 
+    def _get_report(*, league_id, report_type, period):
+        override = state.get("fresh_metadata")
+        if override is not None:
+            base = (
+                state["writes"][-1]
+                if state["writes"]
+                else {"metadata": {}}
+            )
+            return {**base, "metadata": {**(base.get("metadata") or {}), **override}}
+        return state["writes"][-1] if state["writes"] else None
+
+    def _stamp_broadcast_at(*, league_id, report_type, period):
+        return _update_metadata(
+            league_id=league_id,
+            report_type=report_type,
+            period=period,
+            partial={"broadcast_at": "2026-09-10T18:30:00Z"},
+        )
+
     fake_reports.get_latest = _get_latest
+    fake_reports.get_report = _get_report
     fake_reports.write_report = _write_report
     fake_reports.update_metadata = _update_metadata
+    fake_reports.stamp_broadcast_at = _stamp_broadcast_at
     monkeypatch.setattr(orch, "ai_reports_store", fake_reports)
 
     # ai_memories_store

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lambdas.common.admin_gate import is_admin
 from lambdas.common.ai_reports_store import REPORT_TYPES, get_latest
 from lambdas.common.errors import handle_errors
 from lambdas.common.logger import get_logger
@@ -72,4 +73,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
     report = get_latest(league_id, report_type)
+
+    # Admin-portal F3: hide redacted reports from non-admin callers.
+    # Admins still see the row (the iOS archive surfaces a "Show
+    # redacted" toggle so they can un-redact). Treat the redacted-
+    # for-non-admin case as "no report" so the iOS empty-state path
+    # is identical to the no-row case — no info leak about the row's
+    # existence.
+    if report and not is_admin(event):
+        metadata = report.get("metadata") or {}
+        if str(metadata.get("is_redacted", "")).lower() == "true":
+            report = None
+
     return success_response({"report": report})

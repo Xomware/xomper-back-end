@@ -85,3 +85,39 @@ def require_admin(event: dict[str, Any], body: dict[str, Any] | None = None) -> 
         raise NotAdmin("not authorized")
 
     return user
+
+
+def is_admin(event: dict[str, Any], body: dict[str, Any] | None = None) -> bool:
+    """Non-raising sibling of `require_admin`.
+
+    Returns True when the resolved caller exists in `whitelisted_users`
+    AND has `is_admin == true`. Returns False in every other case —
+    missing identifier, unknown user, non-admin user, or any lookup
+    error. Used by read-path endpoints
+    (`api_ai_reports_latest`, `api_ai_reports_list`) to branch the
+    redact filter without polluting the happy-path response with
+    admin-gate exceptions: non-admin callers are still served, just
+    with redacted rows filtered out.
+    """
+    try:
+        sleeper_id, email = resolve_caller_identity(event, body)
+    except Exception as err:  # noqa: BLE001 — read paths never fail on identity
+        log.warning(f"admin_gate.is_admin: identity resolution failed: {err}")
+        return False
+
+    if not sleeper_id and not email:
+        return False
+
+    try:
+        user: dict[str, Any] | None = None
+        if sleeper_id:
+            user = get_whitelisted_user_by_sleeper_id(sleeper_id)
+        if not user and email:
+            user = get_whitelisted_user_by_email(email)
+    except Exception as err:  # noqa: BLE001 — read paths never fail on lookup
+        log.warning(f"admin_gate.is_admin: lookup failed: {err}")
+        return False
+
+    if not user:
+        return False
+    return bool(user.get("is_admin"))

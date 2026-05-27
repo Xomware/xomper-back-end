@@ -315,6 +315,35 @@ def update_metadata(
     return response.get("Attributes", {})
 
 
+def stamp_broadcast_at(
+    league_id: str,
+    report_type: str,
+    period: str,
+) -> dict[str, Any]:
+    """Stamp `metadata.broadcast_at = <utc iso8601>` on the report row.
+
+    Canonical single-write helper for the broadcast-success path —
+    called by all three orchestrators (postdraft, preseason, weekly)
+    after `send_emails_concurrently` returns. Keeps the timestamp
+    format identical across report types so the iOS surface can
+    parse a single shape.
+
+    Returns:
+        The updated item (mirrors `update_metadata`).
+
+    Raises:
+        ValidationError: invalid report_type / empty inputs.
+        DynamoDBError: on Dynamo failure.
+    """
+    broadcast_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return update_metadata(
+        league_id=league_id,
+        report_type=report_type,
+        period=period,
+        partial={"broadcast_at": broadcast_at},
+    )
+
+
 def list_recent(
     league_id: str,
     limit: int = 20,
