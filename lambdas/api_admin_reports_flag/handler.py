@@ -51,6 +51,7 @@ from typing import Any
 
 from lambdas.common import ai_reports_store
 from lambdas.common.admin_gate import NotAdmin, require_admin
+from lambdas.common.audit_log import write_audit
 from lambdas.common.errors import XomperError, handle_errors
 from lambdas.common.logger import get_logger
 from lambdas.common.utility_helpers import parse_body, success_response
@@ -148,6 +149,16 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             status_code=404,
         )
 
+    # Capture the previous flag value BEFORE mutating so the audit
+    # `before` blob records the actual transition (not just a snapshot
+    # of the post-write state). Existing metadata persists flags as
+    # "true"/"false" strings to match the iOS flat-map accessor.
+    existing_metadata = report.get("metadata") if isinstance(report, dict) else None
+    if isinstance(existing_metadata, dict):
+        old_value_str = existing_metadata.get(flag)
+    else:
+        old_value_str = None
+
     # --- mutate -------------------------------------------------------------
     value_str = "true" if raw_value else "false"
     try:
@@ -163,12 +174,20 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     metadata = updated_item.get("metadata") if isinstance(updated_item, dict) else None
 
-    # TODO(F4): audit_log_write — capture (actor_sleeper_id, flag,
-    # value, target_report_id, ts) into the `admin_audit` Supabase
-    # table. F4 ships the table + retrofits this lambda + the F1
-    # admin-portal lambdas. For now the orchestrators rely on Dynamo
-    # metadata + CloudWatch logs as a poor-man's audit trail.
-    actor = admin_user.get("sleeper_user_id") or admin_user.get("id")
+    # F4 audit retrofit. Best-effort — audit failures NEVER fail the
+    # parent action (the flag is already toggled in Dynamo). The
+    # `before` / `after` JSONB blobs capture the actual transition on
+    # the flag key only — keeping the audit row compact and easy to
+    # diff in the iOS audit feed.
+    actor = admin_user.get("sleeper_user_id") or admin_user.get("id") or "unknown"
+    write_audit(
+        actor_user_id=str(actor),
+        action="reports.flag",
+        target_table="xomper-ai-reports",
+        target_id=f"{league_id}|{report_type}|{period}",
+        before={flag: old_value_str},
+        after={flag: value_str},
+    )
     log.info(
         f"admin_reports_flag: actor={actor} league={league_id} "
         f"type={report_type} period={period} flag={flag} value={raw_value}"

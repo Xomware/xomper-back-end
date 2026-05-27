@@ -53,6 +53,7 @@ from typing import Any, Optional
 
 from lambdas.common import ai_reports_store
 from lambdas.common.admin_gate import NotAdmin, require_admin
+from lambdas.common.audit_log import write_audit
 from lambdas.common.email_templates.ai_review import build_email_payload
 from lambdas.common.errors import XomperError, handle_errors
 from lambdas.common.logger import get_logger
@@ -75,7 +76,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     body = parse_body(event)
 
     try:
-        require_admin(event, body)
+        admin_user = require_admin(event, body)
     except NotAdmin:
         return success_response(
             {"Success": False, "Message": "Not authorized"},
@@ -185,6 +186,31 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
     sent_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # F4 audit retrofit. Best-effort write — failures NEVER fail the
+    # parent action (the email already sent successfully). See
+    # audit_log.write_audit docstring for the swallow-all contract.
+    actor = (
+        admin_user.get("sleeper_user_id")
+        or admin_user.get("id")
+        or "unknown"
+    )
+    write_audit(
+        actor_user_id=str(actor),
+        action="email.test",
+        target_table="xomper-ai-reports",
+        target_id=f"LEAGUE#{league_id}|REPORT#{report_type}#{period}",
+        before=None,
+        after={
+            "recipient_email": recipient_email,
+            "recipient_user_id": recipient_user_id,
+            "report_type": report_type,
+            "report_period": period,
+            "message_id": result.get("message_id"),
+            "template": TEMPLATE_NAME,
+        },
+    )
+
     return success_response(
         {
             "Success": True,
