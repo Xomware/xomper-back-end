@@ -24,7 +24,7 @@ Schema
     - `metadata` (M): structured metadata
       `{prompt_version, model, token_usage_in, token_usage_out,
         source_data_keys, ...}`.
-    - `report_type` (S): `postDraft` | `preseason` | `weekly`.
+    - `report_type` (S): `postDraft` | `preseason` | `weekly` | `mock`.
     - `period` (S): the same period string used in `sk`.
     - `league_id` (S): convenience copy for read paths.
 
@@ -53,9 +53,11 @@ from lambdas.common.logger import get_logger
 
 log = get_logger(__file__)
 
-# Allowed report types. Keep this tight — F1/F2/F3 add nothing new,
-# they each use exactly one of these.
-REPORT_TYPES: tuple[str, ...] = ("postDraft", "preseason", "weekly")
+# Allowed report types. Keep this tight — F1/F2/F3 each use exactly
+# one of postDraft/preseason/weekly. `mock` is a read-only surface
+# for pre-seeded mock draft reports (iOS Draft tab mock cards); no
+# generator lambda writes this type — backfilled directly via boto3.
+REPORT_TYPES: tuple[str, ...] = ("postDraft", "preseason", "weekly", "mock")
 
 GSI_CREATED_AT = "created-at-index"
 
