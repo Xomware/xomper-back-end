@@ -216,10 +216,37 @@ jobs:
           FUNCTION_NAME=$(echo $FUNCTION_NAME | tr '_' '-')
 
           echo "Deploying code for $FUNCTION_NAME"
-          aws lambda update-function-code \
-            --function-name $FUNCTION_NAME \
-            --zip-file fileb://${{ matrix.lambda }}.zip \
-            --region $AWS_REGION
+
+          # Wait for any in-flight infra updates to settle before our code push.
+          # Terraform in xomper-infrastructure may still be creating/updating
+          # this lambda concurrently — pushing code while it's in `Pending`
+          # state hits ResourceConflictException. `function-active` waits up
+          # to 10 minutes for the function to reach Active state. If the
+          # lambda doesn't exist yet (terraform hasn't run), bail loudly so
+          # the human can rerun once terraform finishes.
+          if ! aws lambda wait function-active --function-name $FUNCTION_NAME --region $AWS_REGION 2>/dev/null; then
+            echo "::error::Lambda $FUNCTION_NAME not yet Active — terraform may still be applying. Rerun this job after the terraform workflow completes."
+            exit 1
+          fi
+
+          # Retry the code update on ResourceConflictException up to 3 times
+          # with backoff — covers the narrow window where terraform has
+          # finished a create but the lambda's state-machine is still
+          # propagating to `update-function-code`.
+          for attempt in 1 2 3; do
+            if aws lambda update-function-code \
+              --function-name $FUNCTION_NAME \
+              --zip-file fileb://${{ matrix.lambda }}.zip \
+              --region $AWS_REGION 2>&1 | tee /tmp/upd-$attempt.log; then
+              break
+            fi
+            if ! grep -q "ResourceConflictException" /tmp/upd-$attempt.log; then
+              echo "::error::Lambda code update failed (non-retryable)"
+              exit 1
+            fi
+            echo "ResourceConflictException on attempt $attempt — sleeping $((attempt * 10))s before retry"
+            sleep $((attempt * 10))
+          done
 
           # Wait for function to finish updating before config change
           echo "Waiting for function update to complete..."
