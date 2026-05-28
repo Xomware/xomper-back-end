@@ -58,3 +58,23 @@ ADMIN_DOMINICK_USER_ID = "594625531702460416"
 # LOGO URL
 LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-logo.jpg"
 BANNER_LOGO_URL = f"{XOMPER_URL}/assets/img/xomper-banner.jpg"
+
+# Admin Portal F5 — CloudWatch Log Viewer.
+# Allowlist of log groups the admin CloudWatch tail can read. The key
+# is the API-facing slug (what iOS sends + what the IAM policy uses as
+# a label); the value is the full CloudWatch log group name. The
+# `api_admin_logs_query` lambda validates the inbound `log_group`
+# param against these keys as defense-in-depth — the lambda's IAM
+# role is also scoped to exactly these 10 ARNs by Terraform.
+ADMIN_LOG_GROUP_ALLOWLIST = {
+    "ai-review-postdraft": "/aws/lambda/xomper-api-admin-ai-review-postdraft-trigger",
+    "ai-review-preseason": "/aws/lambda/xomper-api-admin-ai-review-preseason-trigger",
+    "ai-review-weekly": "/aws/lambda/xomper-api-admin-ai-review-weekly-trigger",
+    "ai-review-weekly-cron": "/aws/lambda/xomper-notif-ai-review-weekly",
+    "weekly-recap": "/aws/lambda/xomper-notif-weekly-recap",
+    "email-test": "/aws/lambda/xomper-api-admin-email-test",
+    "reports-flag": "/aws/lambda/xomper-api-admin-reports-flag",
+    "users-update": "/aws/lambda/xomper-api-admin-users-update",
+    "leagues-update": "/aws/lambda/xomper-api-admin-leagues-update",
+    "audit-list": "/aws/lambda/xomper-api-admin-audit-list",
+}
