@@ -302,6 +302,17 @@ def run_weekly(
         sleeper_users=sleeper_users,
     )
 
+    # iOS surface (`MatchupBlurbCardView` on `MatchupsView`) decodes
+    # `metadata.matchups[]` per weekly report and renders the blurb
+    # under each matchup card. Built deterministically here so future
+    # live-week cron fires emit the same shape as the backfilled
+    # historical reports — see PR #91 / iOS `WeeklyMatchupBlurb`.
+    matchup_blurbs = _build_matchup_blurbs(
+        matchups_raw=matchups_raw,
+        rosters=rosters,
+        sleeper_users=sleeper_users,
+    )
+
     prior_memories = ai_memories_store.list_recent_memories(
         league_id, season, limit=AI_REVIEW_WEEKLY_MEMORY_LOOKBACK
     )
@@ -346,6 +357,11 @@ def run_weekly(
         "memory_count_out": 0,  # patched below post-write
         "envelope_parsed": parse_ok,
         "broadcast_at": None,
+        # Per-matchup blurbs for the iOS MatchupBlurbCardView surface.
+        # Empty list is safe (off-week / no matchups) — the iOS
+        # decoder treats a missing/empty array as "no blurbs to
+        # render" and the surface no-ops.
+        "matchups": matchup_blurbs,
     }
     if created_by_user_id:
         metadata["created_by_user_id"] = created_by_user_id
@@ -628,6 +644,237 @@ def _build_matchups(
 
     matchups.sort(key=lambda m: float(m.get("margin") or 0.0), reverse=True)
     return matchups
+
+
+# ---------------------------------------------------------------------------
+# Per-matchup blurbs (iOS `MatchupBlurbCardView` wire shape)
+# ---------------------------------------------------------------------------
+#
+# The historical 36-report backfill stamped `metadata.matchups[]` on
+# each weekly row by hand. The live cron + admin trigger must emit
+# the same shape so the iOS surface keeps rendering once the 2026
+# season opens. Generated DETERMINISTICALLY in Python (no LLM call)
+# from the same Sleeper data fetched for the prompt — see iOS
+# `WeeklyMatchupBlurb` decoder for the contract.
+
+
+# Margin bands -> template format strings. Tuple-ordered: the first
+# band whose threshold the margin meets wins. Sentinel `0.0` floor
+# catches ties via the explicit `winner == "tie"` short-circuit.
+# Keep the templates aligned with the backfilled historical voice.
+_BLURB_BANDS: tuple[tuple[float, str], ...] = (
+    (
+        60.0,
+        "**{winner_team} obliterated {loser_team} {wpts}-{lpts}** — "
+        "a {margin}-point shellacking that ended the conversation by "
+        "halftime.",
+    ),
+    (
+        40.0,
+        "**{winner_team} blew out {loser_team} {wpts}-{lpts}** — "
+        "{margin}-point margin, no nail-biting required.",
+    ),
+    (
+        20.0,
+        "**{winner_team} handled {loser_team} {wpts}-{lpts}** — "
+        "comfortable {margin}-point win, never in doubt.",
+    ),
+    (
+        8.0,
+        "**{winner_team} edged {loser_team} {wpts}-{lpts}** — "
+        "{margin}-point swing, one MNF performance away from "
+        "flipping.",
+    ),
+    (
+        3.0,
+        "**{winner_team} squeaked past {loser_team} {wpts}-{lpts}** "
+        "— a {margin}-point grinder. Both managers ran out the clock "
+        "with bench-checks.",
+    ),
+    (
+        0.0,
+        "**{winner_team} stole one from {loser_team} {wpts}-{lpts}** "
+        "— {margin}-point heartbreaker. {loser_handle} is reading "
+        "this with clenched jaw.",
+    ),
+)
+
+_BLURB_TIE_TEMPLATE = (
+    "**{team_a} {apts} TIED {team_b} {bpts}** — both teams stuck "
+    "the landing on the same number."
+)
+
+
+def _fmt_score(value: Any) -> str:
+    """Render a score as a one-decimal string (matches backfilled
+    template style: "204.9", "143.82" rounded to one place for
+    readability inside the blurb)."""
+    try:
+        return f"{float(value):.1f}"
+    except (TypeError, ValueError):
+        return "0.0"
+
+
+def render_matchup_blurb(matchup: dict[str, Any]) -> str:
+    """Render a deterministic one-line markdown blurb for a single
+    matchup. Pure function — no I/O, no LLM call.
+
+    Args:
+        matchup: Dict carrying at minimum `team_a`, `team_b`,
+            `handle_a`, `handle_b`, `score_a`, `score_b`, `margin`,
+            `winner` ("a" | "b" | "tie"). Scores + margin may be
+            floats OR strings (boto3-safe wire shape).
+
+    Returns:
+        Markdown blurb string. Always non-empty.
+    """
+    team_a = str(matchup.get("team_a") or "Team A")
+    team_b = str(matchup.get("team_b") or "Team B")
+    handle_a = str(matchup.get("handle_a") or team_a)
+    handle_b = str(matchup.get("handle_b") or team_b)
+    winner = str(matchup.get("winner") or "tie").lower()
+
+    try:
+        score_a = float(matchup.get("score_a") or 0.0)
+    except (TypeError, ValueError):
+        score_a = 0.0
+    try:
+        score_b = float(matchup.get("score_b") or 0.0)
+    except (TypeError, ValueError):
+        score_b = 0.0
+    try:
+        margin = float(matchup.get("margin") or 0.0)
+    except (TypeError, ValueError):
+        margin = 0.0
+
+    if winner == "tie":
+        return _BLURB_TIE_TEMPLATE.format(
+            team_a=team_a,
+            team_b=team_b,
+            apts=_fmt_score(score_a),
+            bpts=_fmt_score(score_b),
+        )
+
+    if winner == "a":
+        winner_team, loser_team = team_a, team_b
+        winner_handle, loser_handle = handle_a, handle_b
+        wpts, lpts = score_a, score_b
+    else:
+        winner_team, loser_team = team_b, team_a
+        winner_handle, loser_handle = handle_b, handle_a
+        wpts, lpts = score_b, score_a
+
+    abs_margin = abs(margin)
+    template = _BLURB_BANDS[-1][1]
+    for threshold, candidate in _BLURB_BANDS:
+        if abs_margin >= threshold:
+            template = candidate
+            break
+
+    return template.format(
+        winner_team=winner_team,
+        loser_team=loser_team,
+        winner_handle=winner_handle,
+        loser_handle=loser_handle,
+        wpts=_fmt_score(wpts),
+        lpts=_fmt_score(lpts),
+        margin=_fmt_score(abs_margin),
+    )
+
+
+def _build_matchup_blurbs(
+    *,
+    matchups_raw: list[dict[str, Any]],
+    rosters: list[dict[str, Any]],
+    sleeper_users: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build the iOS `metadata.matchups[]` wire shape from the same
+    raw Sleeper inputs used by `_build_matchups`. Preserves the
+    insertion order of the two sides per `matchup_id` as `team_a`
+    (first roster entry seen) and `team_b` (second), which keeps the
+    `winner` axis stable across re-runs.
+
+    Returns one dict per fully-paired matchup. Solo / un-paired
+    Sleeper entries (e.g., bye-week placeholders) are skipped — same
+    rule as `_build_matchups`. Empty list is a valid return.
+
+    Wire shape per entry (boto3-safe — scores + margin as strings):
+
+        {
+            "matchup_id": int,
+            "team_a": str, "team_b": str,
+            "handle_a": str, "handle_b": str,
+            "user_id_a": str, "user_id_b": str,
+            "score_a": str, "score_b": str,
+            "margin": str,
+            "winner": "a" | "b" | "tie",
+            "blurb": str,
+        }
+    """
+    users_by_id = {u.get("user_id"): u for u in sleeper_users}
+    roster_by_id = {r.get("roster_id"): r for r in rosters}
+
+    def _side_view(entry: dict[str, Any]) -> dict[str, Any]:
+        roster_id = entry.get("roster_id")
+        roster = roster_by_id.get(roster_id, {}) if roster_id else {}
+        owner_id = roster.get("owner_id") or ""
+        user = users_by_id.get(owner_id, {}) if owner_id else {}
+        team_name = (user.get("metadata") or {}).get("team_name") or (
+            user.get("display_name") or "Unknown"
+        )
+        handle = user.get("display_name") or "Unknown"
+        try:
+            points = float(entry.get("points") or 0.0)
+        except (TypeError, ValueError):
+            points = 0.0
+        return {
+            "team": team_name,
+            "handle": handle,
+            "user_id": str(owner_id) if owner_id else "",
+            "points": round(points, 2),
+        }
+
+    pairs: dict[int, list[dict[str, Any]]] = {}
+    for entry in matchups_raw:
+        mid = entry.get("matchup_id")
+        if mid is None:
+            continue
+        pairs.setdefault(mid, []).append(entry)
+
+    blurbs: list[dict[str, Any]] = []
+    for mid, group in pairs.items():
+        if len(group) != 2:
+            continue
+        a_raw, b_raw = group
+        a = _side_view(a_raw)
+        b = _side_view(b_raw)
+        margin_signed = round(a["points"] - b["points"], 2)
+        is_tie = abs(margin_signed) < 0.0001
+        if is_tie:
+            winner = "tie"
+        elif margin_signed > 0:
+            winner = "a"
+        else:
+            winner = "b"
+        margin_abs = round(abs(margin_signed), 2)
+
+        entry_dict: dict[str, Any] = {
+            "matchup_id": mid,
+            "team_a": a["team"],
+            "team_b": b["team"],
+            "handle_a": a["handle"],
+            "handle_b": b["handle"],
+            "user_id_a": a["user_id"],
+            "user_id_b": b["user_id"],
+            "score_a": str(a["points"]),
+            "score_b": str(b["points"]),
+            "margin": str(margin_abs),
+            "winner": winner,
+        }
+        entry_dict["blurb"] = render_matchup_blurb(entry_dict)
+        blurbs.append(entry_dict)
+
+    return blurbs
 
 
 def _parse_envelope(
