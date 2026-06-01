@@ -11,6 +11,8 @@ Idempotency: re-runs of the same week regenerate the same reminder.
 A manager with no issues never gets pinged.
 """
 from typing import Any
+from lambdas.common.admin_only_filter import filter_to_admin_only
+from lambdas.common.cron_settings import get_cron_setting
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
@@ -34,6 +36,7 @@ from lambdas.common.email_templates import (
 
 log = get_logger(__file__)
 HANDLER = "notif_lineup_not_set"
+LAMBDA_CRON_KEY = "notif_lineup_not_set"
 
 # A starter slot is considered "needs attention" when:
 # - empty / "0" placeholder
@@ -47,6 +50,18 @@ ACTIONABLE_INJURY_STATUSES = {"Out", "OUT", "IR", "Suspended", "PUP", "NA", "Dou
 @handle_errors(HANDLER)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     log.info("Starting Lineup-Not-Set notification...")
+
+    # Admin cron settings gate (admin-cron-settings).
+    cron_setting = get_cron_setting(LAMBDA_CRON_KEY)
+    if not cron_setting["enabled"]:
+        log.info(
+            f"{LAMBDA_CRON_KEY} disabled via admin_cron_settings — skipping"
+        )
+        return success_response(
+            {"Success": True, "skipped": True, "reason": "disabled"},
+            is_api=False,
+        )
+    test_mode = bool(cron_setting["test_mode"])
 
     league_row = get_active_whitelisted_league()
     if not league_row:
@@ -67,6 +82,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     user_by_id = {u["user_id"]: u for u in users}
 
     whitelisted = get_active_whitelisted_users()
+    if test_mode:
+        whitelisted = filter_to_admin_only(whitelisted)
+        log.info(
+            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
+            f"admin only ({len(whitelisted)} user(s))"
+        )
     sleeper_id_to_user = {
         w.get("sleeper_user_id"): w
         for w in whitelisted

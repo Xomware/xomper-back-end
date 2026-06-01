@@ -17,6 +17,8 @@ content and sends again. Acceptable for a recap (low blast radius);
 if needed, gate behind a DynamoDB "last sent week" record.
 """
 from typing import Any
+from lambdas.common.admin_only_filter import filter_to_admin_only
+from lambdas.common.cron_settings import get_cron_setting
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
@@ -41,11 +43,26 @@ from lambdas.common.email_templates import (
 
 log = get_logger(__file__)
 HANDLER = "notif_weekly_recap"
+LAMBDA_CRON_KEY = "notif_weekly_recap"
 
 
 @handle_errors(HANDLER)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     log.info("Starting Weekly Recap notification...")
+
+    # 0. Admin cron settings gate (admin-cron-settings).
+    #    `enabled=false` → no-op skip. `test_mode=true` → restrict
+    #    recipient list to admin only before SES/SNS fan-out.
+    cron_setting = get_cron_setting(LAMBDA_CRON_KEY)
+    if not cron_setting["enabled"]:
+        log.info(
+            f"{LAMBDA_CRON_KEY} disabled via admin_cron_settings — skipping"
+        )
+        return success_response(
+            {"Success": True, "skipped": True, "reason": "disabled"},
+            is_api=False,
+        )
+    test_mode = bool(cron_setting["test_mode"])
 
     # 1. Resolve active league
     league_row = get_active_whitelisted_league()
@@ -100,6 +117,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # 7. Resolve recipients from Supabase (sleeper_user_id → push + email)
     whitelisted = get_active_whitelisted_users()
+    if test_mode:
+        whitelisted = filter_to_admin_only(whitelisted)
+        log.info(
+            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
+            f"admin only ({len(whitelisted)} user(s))"
+        )
     sleeper_id_to_user = {
         w.get("sleeper_user_id"): w
         for w in whitelisted
