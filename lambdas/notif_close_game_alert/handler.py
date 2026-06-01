@@ -20,6 +20,8 @@ concern.
 from datetime import datetime, timezone
 from typing import Any
 
+from lambdas.common.admin_only_filter import filter_to_admin_only
+from lambdas.common.cron_settings import get_cron_setting
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
@@ -38,6 +40,7 @@ from lambdas.common.push_templates import close_game_push
 
 log = get_logger(__file__)
 HANDLER = "notif_close_game_alert"
+LAMBDA_CRON_KEY = "notif_close_game_alert"
 
 CLOSE_GAME_THRESHOLD = 10.0  # points
 
@@ -45,6 +48,18 @@ CLOSE_GAME_THRESHOLD = 10.0  # points
 @handle_errors(HANDLER)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     log.info("Starting Close Game Alert notification...")
+
+    # Admin cron settings gate (admin-cron-settings).
+    cron_setting = get_cron_setting(LAMBDA_CRON_KEY)
+    if not cron_setting["enabled"]:
+        log.info(
+            f"{LAMBDA_CRON_KEY} disabled via admin_cron_settings — skipping"
+        )
+        return success_response(
+            {"Success": True, "skipped": True, "reason": "disabled"},
+            is_api=False,
+        )
+    test_mode = bool(cron_setting["test_mode"])
 
     league_row = get_active_whitelisted_league()
     if not league_row:
@@ -67,6 +82,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     roster_by_id = {r["roster_id"]: r for r in rosters}
 
     whitelisted = get_active_whitelisted_users()
+    if test_mode:
+        whitelisted = filter_to_admin_only(whitelisted)
+        log.info(
+            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
+            f"admin only ({len(whitelisted)} user(s))"
+        )
     sleeper_id_to_email = {
         w.get("sleeper_user_id"): w.get("email")
         for w in whitelisted
