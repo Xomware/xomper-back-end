@@ -1465,3 +1465,355 @@ class TestHandlerPreviews:
         body = json.loads(response["body"])
         assert body["previews"] is None
         assert body["period"] == "2026W04"
+
+
+# ---------------------------------------------------------------------------
+# Per-matchup blurbs (iOS `MatchupBlurbCardView` surface)
+# ---------------------------------------------------------------------------
+#
+# The iOS `MatchupsView` decodes `metadata.matchups[]` per weekly
+# report and renders a per-matchup blurb under each card. The
+# historical 36-report backfill stamped the array inline; these
+# tests lock the live orchestrator path so future cron fires emit
+# the same shape.
+
+
+class TestRenderMatchupBlurb:
+    """Locks the deterministic margin-banded template renderer."""
+
+    def _base(self) -> dict[str, Any]:
+        return {
+            "matchup_id": 1,
+            "team_a": "Brock Party",
+            "team_b": "Gangsters of Love",
+            "handle_a": "domgiordano",
+            "handle_b": "ozz",
+            "user_id_a": "uA",
+            "user_id_b": "uB",
+        }
+
+    def test_obliterated_band_ge_60(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "204.9",
+            "score_b": "140.9",
+            "margin": "64.0",
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "obliterated" in blurb
+        assert "shellacking" in blurb
+        assert "Brock Party" in blurb
+        assert "204.9" in blurb
+        assert "140.9" in blurb
+
+    def test_blew_out_band_ge_40(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "180.0",
+            "score_b": "135.0",
+            "margin": "45.0",
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "blew out" in blurb
+        assert "no nail-biting" in blurb
+
+    def test_handled_band_ge_20(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "150.0",
+            "score_b": "125.0",
+            "margin": "25.0",
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "handled" in blurb
+        assert "comfortable" in blurb
+
+    def test_edged_band_ge_8(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "132.3",
+            "score_b": "124.3",
+            "margin": "8.0",
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "edged" in blurb
+        assert "MNF" in blurb
+
+    def test_squeaked_band_ge_3(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "120.0",
+            "score_b": "115.0",
+            "margin": "5.0",
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "squeaked past" in blurb
+        assert "grinder" in blurb
+
+    def test_stole_one_band_lt_3(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "100.5",
+            "score_b": "99.0",
+            "margin": "1.5",
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "stole one" in blurb
+        assert "heartbreaker" in blurb
+        # Loser handle gets called out by name in the tightest band.
+        assert "ozz" in blurb
+
+    def test_tie_template(self) -> None:
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "110.0",
+            "score_b": "110.0",
+            "margin": "0.0",
+            "winner": "tie",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "TIED" in blurb
+        assert "Brock Party" in blurb
+        assert "Gangsters of Love" in blurb
+        assert "stuck the landing" in blurb
+
+    def test_winner_b_flips_team_order(self) -> None:
+        """When winner='b', the template names team_b as the winner."""
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": "100.0",
+            "score_b": "150.0",
+            "margin": "50.0",
+            "winner": "b",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "blew out" in blurb
+        # team_b name comes first as the winner.
+        assert blurb.index("Gangsters of Love") < blurb.index("Brock Party")
+
+    def test_accepts_numeric_scores(self) -> None:
+        """Scores as floats (not strings) still render cleanly —
+        defensive against shape drift."""
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        m = {
+            **self._base(),
+            "score_a": 145.7,
+            "score_b": 95.3,
+            "margin": 50.4,
+            "winner": "a",
+        }
+        blurb = render_matchup_blurb(m)
+        assert "blew out" in blurb
+        assert "145.7" in blurb
+        assert "95.3" in blurb
+
+    def test_band_boundaries_inclusive(self) -> None:
+        """Exact-threshold margins land in the higher band."""
+        from lambdas.common.weekly_orchestrator import render_matchup_blurb
+
+        # Exactly 60.0 -> obliterated band.
+        m60 = {
+            **self._base(),
+            "score_a": "200.0",
+            "score_b": "140.0",
+            "margin": "60.0",
+            "winner": "a",
+        }
+        assert "obliterated" in render_matchup_blurb(m60)
+
+        # Exactly 40.0 -> blew out band.
+        m40 = {
+            **self._base(),
+            "score_a": "175.0",
+            "score_b": "135.0",
+            "margin": "40.0",
+            "winner": "a",
+        }
+        assert "blew out" in render_matchup_blurb(m40)
+
+        # Exactly 20.0 -> handled band.
+        m20 = {
+            **self._base(),
+            "score_a": "150.0",
+            "score_b": "130.0",
+            "margin": "20.0",
+            "winner": "a",
+        }
+        assert "handled" in render_matchup_blurb(m20)
+
+        # Exactly 8.0 -> edged band.
+        m8 = {
+            **self._base(),
+            "score_a": "120.0",
+            "score_b": "112.0",
+            "margin": "8.0",
+            "winner": "a",
+        }
+        assert "edged" in render_matchup_blurb(m8)
+
+        # Exactly 3.0 -> squeaked band.
+        m3 = {
+            **self._base(),
+            "score_a": "110.0",
+            "score_b": "107.0",
+            "margin": "3.0",
+            "winner": "a",
+        }
+        assert "squeaked past" in render_matchup_blurb(m3)
+
+
+class TestOrchestratorMatchupBlurbsInMetadata:
+    """End-to-end through `run_weekly`: metadata.matchups must be
+    present, length-correct, and shaped for the iOS decoder."""
+
+    def test_metadata_matchups_present_and_length_matches(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        run_weekly(week=4, dry_run=True, force=False)
+        write = patched_orchestrator["writes"][0]
+        meta = write["metadata"]
+
+        assert "matchups" in meta
+        # _make_matchups() builds 6 head-to-heads across 12 rosters.
+        assert isinstance(meta["matchups"], list)
+        assert len(meta["matchups"]) == 6
+
+    def test_each_blurb_has_wire_shape_required_keys(
+        self, patched_orchestrator
+    ) -> None:
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        run_weekly(week=4, dry_run=True, force=False)
+        meta = patched_orchestrator["writes"][0]["metadata"]
+
+        required = {
+            "matchup_id",
+            "team_a",
+            "team_b",
+            "handle_a",
+            "handle_b",
+            "user_id_a",
+            "user_id_b",
+            "score_a",
+            "score_b",
+            "margin",
+            "winner",
+            "blurb",
+        }
+        for entry in meta["matchups"]:
+            assert required.issubset(entry.keys())
+            # boto3-safe: scores + margin must be strings.
+            assert isinstance(entry["score_a"], str)
+            assert isinstance(entry["score_b"], str)
+            assert isinstance(entry["margin"], str)
+            assert entry["winner"] in {"a", "b", "tie"}
+            assert isinstance(entry["blurb"], str) and entry["blurb"]
+
+    def test_empty_matchups_yields_empty_blurb_list(
+        self, patched_orchestrator
+    ) -> None:
+        """No matchups for the week (off-week / Sleeper hiccup) =>
+        empty list. Must not crash; must not omit the key."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        patched_orchestrator["matchups_by_league_week"][(LEAGUE_ID, 4)] = []
+        run_weekly(week=4, dry_run=True, force=False)
+        meta = patched_orchestrator["writes"][0]["metadata"]
+        assert meta["matchups"] == []
+
+    def test_blurb_strings_are_markdown_one_liners(
+        self, patched_orchestrator
+    ) -> None:
+        """Every emitted blurb opens with a bold markdown segment —
+        matches the backfilled historical voice."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        run_weekly(week=4, dry_run=True, force=False)
+        meta = patched_orchestrator["writes"][0]["metadata"]
+        for entry in meta["matchups"]:
+            assert entry["blurb"].startswith("**")
+
+    def test_winner_axis_consistent_with_scores(
+        self, patched_orchestrator
+    ) -> None:
+        """The `winner` enum must agree with the score_a/score_b
+        comparison. Decoder uses `winner` to drive a/b badges; any
+        mismatch leaks into the UI."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        run_weekly(week=4, dry_run=True, force=False)
+        meta = patched_orchestrator["writes"][0]["metadata"]
+        for entry in meta["matchups"]:
+            a = float(entry["score_a"])
+            b = float(entry["score_b"])
+            if abs(a - b) < 0.0001:
+                assert entry["winner"] == "tie"
+            elif a > b:
+                assert entry["winner"] == "a"
+            else:
+                assert entry["winner"] == "b"
+
+    def test_unpaired_matchups_skipped(
+        self, patched_orchestrator
+    ) -> None:
+        """Solo matchup entries (bye-week placeholder from Sleeper)
+        must not appear in the blurb list — same rule as the prompt
+        builder."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        # Build 5 normal pairs + 1 lone entry.
+        normal = _make_matchups(count=10)
+        normal.append(
+            {
+                "roster_id": 11,
+                "matchup_id": 99,
+                "points": 100.0,
+                "starters_points": [100.0],
+                "players_points": {"p11-0": 100.0},
+            }
+        )
+        patched_orchestrator["matchups_by_league_week"][(LEAGUE_ID, 4)] = normal
+        run_weekly(week=4, dry_run=True, force=False)
+        meta = patched_orchestrator["writes"][0]["metadata"]
+        # 5 pairs => 5 blurbs; the solo entry is dropped.
+        assert len(meta["matchups"]) == 5
+
+    def test_blurb_count_equals_matchup_pair_count(
+        self, patched_orchestrator
+    ) -> None:
+        """For arbitrary pair counts the emitted blurb list length
+        equals the number of fully-paired matchups."""
+        from lambdas.common.weekly_orchestrator import run_weekly
+
+        # 4 pairs across 8 rosters.
+        patched_orchestrator["matchups_by_league_week"][(LEAGUE_ID, 4)] = (
+            _make_matchups(count=8)
+        )
+        run_weekly(week=4, dry_run=True, force=False)
+        meta = patched_orchestrator["writes"][0]["metadata"]
+        assert len(meta["matchups"]) == 4
