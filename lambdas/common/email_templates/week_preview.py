@@ -51,11 +51,16 @@ def generate_week_preview_email(
     safe_manager = _escape(manager_name)
     safe_league = _escape(league_name)
 
-    # Two-pass render. First extract every `##` heading so we can emit
-    # a table-of-contents pill row + slug the heading's `id=` for
-    # anchor links. Then render the body with the same slugs threaded
-    # through `_render_block`.
-    h2_sections = _extract_h2_sections(body_markdown or "")
+    # Two-pass render. First extract every `##` heading from the AI
+    # body. Then append our HTML-side sections (standings + WC) so the
+    # TOC reflects EVERY section of the email, including ones rendered
+    # outside the markdown body. Each pill links to an `id=` slug
+    # injected on the matching header below.
+    h2_sections = list(_extract_h2_sections(body_markdown or ""))
+    if standings:
+        h2_sections.append("League Pulse")
+    if wc_divisions:
+        h2_sections.append("World Cup Standings")
     toc_html = _toc_section(h2_sections) if h2_sections else ""
     body_html = _markdown_to_email_html(body_markdown or "")
 
@@ -225,11 +230,10 @@ def _slug(text: str) -> str:
 
 
 def _toc_section(headings: list[str]) -> str:
-    """TOC pill row — anchor links to each `##` section. Inline-styled
-    so it survives Gmail's CSS stripping. Anchor support varies by
-    client (works in Gmail web + Apple Mail, drops to no-op in Outlook
-    desktop) — when anchors don't fire, the row still acts as a
-    visible outline of the email's sections."""
+    """Pill outline of the email's sections. Anchor-links to each `##`
+    section. Gmail strips the jump behavior (best-effort across clients)
+    — when anchors don't fire, the row still works as a visible "in
+    this email" outline at the top. Apple Mail honors the jumps."""
     if not headings:
         return ""
     pills = ""
@@ -252,9 +256,26 @@ def _toc_section(headings: list[str]) -> str:
         <tr>
             <td style="padding: 0 24px 16px;">
                 <div style="padding: 8px 0 4px;">
-                    <div style="font-family: {FONT_DISPLAY}; font-size: 10px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px;">Jump to</div>
+                    <div style="font-family: {FONT_DISPLAY}; font-size: 10px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px;">In this email</div>
                     {pills}
                 </div>
+            </td>
+        </tr>
+    </table>
+    """
+
+
+def _h2_section_header(label: str) -> str:
+    """Red h2 banner matching `_render_block`'s `## ...` output. Used
+    for the HTML-side sections (standings, WC) so they match the
+    AI-body section headers visually + carry an anchor id."""
+    safe_label = _escape(label)
+    slug = _slug(label)
+    return f"""
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 28px 0 8px;">
+        <tr>
+            <td style="padding: 12px 24px 0; border-top: 2px solid {ACCENT_RED};">
+                <h2 id="{slug}" style="margin: 0; font-family: {FONT_DISPLAY}; font-size: 19px; color: {ACCENT_RED}; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px;">{safe_label}</h2>
             </td>
         </tr>
     </table>
@@ -297,10 +318,8 @@ def _standings_section(
         </tr>
         """
     return f"""
+    {_h2_section_header("League Pulse")}
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-            <td style="padding: 6px 24px 4px; font-family: {FONT_DISPLAY}; font-size: 11px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase;">League Pulse</td>
-        </tr>
         <tr>
             <td style="padding: 0 24px 16px;">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
@@ -353,10 +372,8 @@ def _wc_section(
         </tr>
         """
     return f"""
+    {_h2_section_header("World Cup Standings")}
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-            <td style="padding: 6px 24px 4px; font-family: {FONT_DISPLAY}; font-size: 11px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase;">World Cup Standings</td>
-        </tr>
         {div_blocks}
     </table>
     """
