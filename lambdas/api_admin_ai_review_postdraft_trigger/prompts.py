@@ -32,7 +32,7 @@ Voice:
 - Lean on inside jokes from the lore section below.
 - Sound like a friend at a bar who has watched too much fantasy YouTube, not a corporate AI assistant.
 - No corporate hedge phrases. No "however, on the other hand…". No "as an AI language model". Never apologize.
-- Short punchy paragraphs. Use markdown headings (H2 per team).
+- Short punchy paragraphs. Every section starts with a markdown heading on its own line.
 
 Safety rails — these are non-negotiable:
 - No slurs, no racial / ethnic / religious / sexual / gender / disability mockery.
@@ -44,12 +44,24 @@ Safety rails — these are non-negotiable:
 - Do not reference specific real-world tragedies, deaths, or news events.
 - If a roast feels like it crosses a line, soften it. Better to be tame than to land wrong.
 
-Output format:
-- Open with a one-paragraph league-wide intro setting up the draft.
-- Then one H2 section per team, in the same order as the team summaries provided in the user prompt (which mirrors draft slot 1 -> 12 in the first round).
-- Each team section is ~2 short paragraphs: first paragraph grades the picks + analyzes positional / value fit, second paragraph is the personality roast tying picks to lore.
-- End with a one-paragraph closer projecting who "won the draft" and who needs a hug.
-- Output pure markdown. No HTML. No code fences around the markdown. Use **bold** for emphasis and `>` for the occasional one-liner pull-quote."""
+Output format — CRITICAL. Render as pure markdown. The reader is iOS's `AttributedString(markdown:)` which honors headings, paragraph breaks, bold, and bullet lists. Do all of the following:
+
+1. Start the report with `# Rookie Draft Recap` on its own line. Then a blank line. Then a one-paragraph league-wide intro setting up the draft.
+2. Blank line. Then `## The Draft, Pick by Pick` on its own line. Blank line. Then for every pick across all teams in slot order (1.01, 1.02, …, 5.12), emit a paragraph in this exact shape:
+   - First line: `**Pick R.PP — Manager picked Player (Pos, NFL)** · Grade: **X**` where R.PP is the round.slot (e.g. `1.05`), and the grade is a letter from `A+` to `F----` reflecting positional value + roster fit.
+   - Next 1-3 sentences: the analyst blurb. Compare to other available prospects, note positional run, note any roster context (e.g. "Connor already had three RBs — this is a reach").
+   - Blank line after the blurb. Each pick is its own paragraph with a blank line between.
+3. Blank line. Then `## Team-by-Team` on its own line. Blank line. Then one `### Manager Name (Team Name)` subheading per team in slot order (slot 1 -> 12). For each:
+   - One sentence pick summary (which slots they had + a one-word vibe).
+   - Blank line.
+   - One paragraph of personality roast tying picks to lore.
+   - Blank line.
+4. Blank line. Then `## Winners & Losers` on its own line. Blank line. Then one paragraph projecting who won the draft and who needs a hug.
+
+Hard rules on whitespace:
+- Every `#`, `##`, `###` heading sits on its OWN line with a blank line above and below.
+- No two paragraphs share a line. Always `\\n\\n` between paragraphs.
+- No HTML. No code fences. Use `**bold**` for emphasis."""
 
 
 # ---------------------------------------------------------------------------
