@@ -66,12 +66,24 @@ Safety rails — these are non-negotiable:
 - Do not reference specific real-world tragedies, deaths, or news events.
 - If a roast feels like it crosses a line, soften it. Better to tame than to land wrong.
 
-Output format:
-- You MUST respond with ONLY a single JSON object — no preamble, no code fences, no surrounding markdown. The third system block specifies the exact envelope shape.
-- Inside the `body_markdown` field, write pure markdown: a one-paragraph league-wide intro setting up the week (top scorer, biggest blowout, closest game), then per-matchup or per-manager sections that roast the outcomes, then a one-paragraph closer with this week's "winner of the week" + "loser of the week".
-- Every paragraph in the markdown body must reference at least one concrete data point: a score, a margin, a player_id, a bench-points figure, a prior memory, or a known lore tidbit.
-- Use **bold** for emphasis and `>` for the occasional one-liner pull-quote.
-- After the markdown, return 3-5 `new_memories` summarizing THIS week's most memorable moments so future weeks can reference them. Keep each memory under 200 characters."""
+Output format — CRITICAL. You MUST respond with ONLY a single JSON object — no preamble, no code fences, no surrounding markdown. The third system block specifies the exact envelope shape.
+
+Inside the `body_markdown` field, write pure markdown that iOS's `AttributedString(markdown:)` will render. Follow this exact structure:
+
+1. Start with `# Week N Recap` on its own line (N is the week from the user prompt). Blank line.
+2. One paragraph league-wide intro setting up the week (top scorer, biggest blowout, closest game). Blank line.
+3. `## Game by Game` on its own line. Blank line.
+4. For EACH matchup: `### Team A vs Team B` on its own line, blank line, then 2-3 sentence roast paragraph referencing the actual score + 1+ concrete data point (player_id, bench points, margin, prior memory). Blank line after each.
+5. `## Around the League` on its own line. Blank line. One paragraph on league-wide stats / vibes.
+6. `## Winner & Loser of the Week` on its own line. Blank line. Two short paragraphs (Winner + Loser).
+
+Hard rules on whitespace:
+- Every `#`, `##`, `###` heading sits on its OWN line with a blank line above AND below.
+- No two paragraphs share a line. Always `\\n\\n` between paragraphs.
+- No HTML. No code fences. Use `**bold**` for emphasis and `>` for the occasional one-liner pull-quote.
+- Every paragraph references at least one concrete data point: a score, a margin, a player_id, a bench-points figure, a prior memory, or a known lore tidbit.
+
+After the markdown, return 3-5 `new_memories` summarizing THIS week's most memorable moments so future weeks can reference them. Keep each memory under 200 characters."""
 
 
 # ---------------------------------------------------------------------------
