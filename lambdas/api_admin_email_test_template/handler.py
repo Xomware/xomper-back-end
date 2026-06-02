@@ -54,6 +54,8 @@ from lambdas.common.email_templates import (
     generate_taxi_steal_league_email_plain_text,
     generate_taxi_steal_owner_email,
     generate_taxi_steal_owner_email_plain_text,
+    generate_week_preview_email,
+    generate_week_preview_email_plain_text,
 )
 from lambdas.common.errors import handle_errors
 from lambdas.common.logger import get_logger
@@ -244,7 +246,149 @@ _FIXTURES: dict[str, dict[str, Any]] = {
             "pick_cost": "2027 3rd-round pick",
         },
     },
+    "week_preview": {
+        "subject": f"[TEST] Week 12 {_LEAGUE_NAME} preview",
+        "params": {
+            "manager_name": "Dom",
+            "league_name": _LEAGUE_NAME,
+            "week": 12,
+            # Pre-rendered markdown body — mirrors what Claude will
+            # produce against the week_preview_prompts.py system blocks
+            # so the visual layout is testable before the cron lambda
+            # is wired.
+            "body_markdown": _WEEK_PREVIEW_SAMPLE_BODY,
+            "standings": [
+                ("Gangsters of Love",      9, 2, 0, 1422.0),
+                ("Nvr 4get Da CLT",        7, 4, 0, 1284.3),
+                ("ktatich",                8, 3, 0, 1351.2),
+                ("The Goffather",          7, 4, 0, 1297.8),
+                ("Wake Forest Factory",    7, 4, 0, 1306.4),
+                ("Brock Party",            6, 5, 0, 1241.9),
+                ("Sinnott Committee",      6, 5, 0, 1230.5),
+                ("Shits and Gibbles",      4, 7, 0, 1188.5),
+                ("Shane Beamer's Burner",  5, 6, 0, 1198.0),
+                ("gniadek",                3, 8, 0, 1142.7),
+                ("reesegriffin",           2, 9, 0, 1098.6),
+                ("Nico Suave",             1, 10, 0, 1054.1),
+            ],
+            "wc_divisions": [
+                ("East Division", [
+                    {"team_name": "Gangsters of Love",   "wins": 9, "losses": 2, "ties": 0, "points_for": 1422.0, "status": "clinched"},
+                    {"team_name": "Nvr 4get Da CLT",     "wins": 7, "losses": 4, "ties": 0, "points_for": 1284.3, "status": "clinched"},
+                    {"team_name": "Shits and Gibbles",   "wins": 4, "losses": 7, "ties": 0, "points_for": 1188.5, "status": "eliminated"},
+                ]),
+                ("West Division", [
+                    {"team_name": "ktatich",             "wins": 8, "losses": 3, "ties": 0, "points_for": 1351.2, "status": "clinched"},
+                    {"team_name": "The Goffather",       "wins": 7, "losses": 4, "ties": 0, "points_for": 1297.8, "status": "alive"},
+                    {"team_name": "reesegriffin",        "wins": 2, "losses": 9, "ties": 0, "points_for": 1098.6, "status": "eliminated"},
+                ]),
+                ("North Division", [
+                    {"team_name": "Wake Forest Factory", "wins": 7, "losses": 4, "ties": 0, "points_for": 1306.4, "status": "clinched"},
+                    {"team_name": "Brock Party",         "wins": 6, "losses": 5, "ties": 0, "points_for": 1241.9, "status": "alive"},
+                    {"team_name": "gniadek",             "wins": 3, "losses": 8, "ties": 0, "points_for": 1142.7, "status": "alive"},
+                ]),
+                ("South Division", [
+                    {"team_name": "Sinnott Committee",   "wins": 6, "losses": 5, "ties": 0, "points_for": 1230.5, "status": "alive"},
+                    {"team_name": "Shane Beamer's Burner","wins": 5, "losses": 6, "ties": 0, "points_for": 1198.0, "status": "alive"},
+                    {"team_name": "Nico Suave",          "wins": 1, "losses": 10, "ties": 0, "points_for": 1054.1, "status": "eliminated"},
+                ]),
+            ],
+        },
+    },
 }
+
+
+# Sample markdown body for the week_preview test fixture. Hand-tuned
+# to mirror what week_preview_prompts.py asks Claude to produce so the
+# preview render exercises every section.
+_WEEK_PREVIEW_SAMPLE_BODY = """# Week 12 Preview
+
+Three teams sit at 7-4 with the playoff cutoff drawing daylight. This is the week the standings start mattering — every game pushes someone toward a bye and someone else toward the bubble.
+
+## World Cup Watch
+
+East already locked. **Nvr 4get Da CLT** and **Gangsters of Love** have both clinched their two seeds. West is the live one — **The Goffather** sitting 7-4 needs the **ktatich** loss + a Tibor win to flip the order. North is settled (Wake clinched), but **gniadek** at 3-8 isn't mathematically eliminated yet and that's almost more embarrassing than getting eliminated cleanly.
+
+## Team-by-Team
+
+### Gangsters of Love (9-2)
+
+Luke can stop trying. Top seed is one win away, the dynasty is rolling, the wallpaper is laminated. This week he could trot out his JV squad and probably still drop 140.
+
+### ktatich (8-3)
+
+Kyle's PF says he's the most talented team in the league and his record says he's a top-3 seed. Both are true. This week's game is the kind he wins comfortably or drops by 4 — there is no middle for him.
+
+### Nvr 4get Da CLT (7-4)
+
+Dom needs to stack a win on top of clinch glow. The 7-4 record paints a tighter race than the PF agrees with — playoff math says #2 seed is genuinely in play if Gangsters slip even once.
+
+### The Goffather (7-4)
+
+Tibor is one of three teams within points-back range of a bye. The schedule does him no favors this week, but the WC math is the only one that matters and he's already alive there.
+
+### Wake Forest Factory (7-4)
+
+Grant's record looks like it should be 8-3 and the PF agrees. He's the one team in this tier that's been consistently unlucky, which means this is the week where karma either pays out or he loses by 2 again.
+
+### Brock Party (6-5)
+
+Michael has won three in a row and is suddenly back in the playoff conversation. The 6-5 is fragile — drop one this week and the math gets very ugly very fast.
+
+### Sinnott Committee (6-5)
+
+Duncan's bench-points number is the worst in the league which is a real choice. If he sets his starters straight one time the 6-5 starts looking a lot more like a 7-4.
+
+### Shits and Gibbles (4-7)
+
+Tony needs to win out + get help. He won't. But he might cause damage on the way down and that's worth tuning in for.
+
+### Shane Beamer's Burner (5-6)
+
+Alex's name remains undefeated. The roster — less so. This week is for spoiler points.
+
+### gniadek (3-8)
+
+Jim. Mathematically alive. Statistically not. Spiritually somewhere in between.
+
+### reesegriffin (2-9)
+
+Reese has the lowest PF in the league and the lore says we don't ask why. This week he plays The Goffather and that should not be close.
+
+### Nico Suave (1-10)
+
+The Suave 12 seed is locked. He drafts at 1.01 next year. We are watching a man choose violence on next year's rookie pool.
+
+## Game by Game
+
+### Gangsters of Love (9-2) vs Sinnott Committee (6-5)
+
+Luke is on cruise control; Duncan is one bench-points-correction away from being 7-4. Stake: Luke's #1 seed solidifies, Duncan keeps WC alive in South.
+
+### ktatich (8-3) vs Wake Forest Factory (7-4)
+
+Game of the week. Two teams with top-3 PF and identical vibes (talented, slightly under-recorded). Loser is suddenly in trouble for the bye.
+
+### Nvr 4get Da CLT (7-4) vs Shits and Gibbles (4-7)
+
+Trap game. Dom's coming off a clinch, Tony is in spoiler mode with nothing to lose. Watch the bench.
+
+### The Goffather (7-4) vs reesegriffin (2-9)
+
+Should be the easiest path to a bye-spot push. If Tibor drops this one the playoff conversation about him stops being polite.
+
+### Brock Party (6-5) vs Shane Beamer's Burner (5-6)
+
+The "fighting for the 6 seed" matchup. Both teams own their fate this week.
+
+### gniadek (3-8) vs Nico Suave (1-10)
+
+The lottery matchup. Both managers should be tanking for picks but Jim still won't.
+
+## Bold Prediction
+
+Wake Forest Factory finally wins one of these close ones, ktatich drops the bye race, and **The Goffather** vaults to the #3 seed off the upset chaos. By Tuesday morning the top six all sit within one game of each other and the recap email gets twice as fun to write.
+"""
 
 # Wires each kind to (html builder, text builder). Listed inline so
 # the dispatch table stays in one place.
@@ -256,6 +400,7 @@ _BUILDERS = {
     "rule_denied":       (generate_rule_denied_email,       generate_rule_denied_email_plain_text),
     "taxi_steal_league": (generate_taxi_steal_league_email, generate_taxi_steal_league_email_plain_text),
     "taxi_steal_owner":  (generate_taxi_steal_owner_email,  generate_taxi_steal_owner_email_plain_text),
+    "week_preview":      (generate_week_preview_email,      generate_week_preview_email_plain_text),
 }
 
 

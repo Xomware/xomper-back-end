@@ -33,6 +33,10 @@ from .weekly_recap import (
     generate_weekly_recap_email,
     generate_weekly_recap_email_plain_text,
 )
+from .week_preview import (
+    generate_week_preview_email,
+    generate_week_preview_email_plain_text,
+)
 
 __all__ = [
     "generate_taxi_steal_league_email",
@@ -49,4 +53,6 @@ __all__ = [
     "generate_lineup_not_set_email_plain_text",
     "generate_weekly_recap_email",
     "generate_weekly_recap_email_plain_text",
+    "generate_week_preview_email",
+    "generate_week_preview_email_plain_text",
 ]
