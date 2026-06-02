@@ -31,8 +31,10 @@ jobs:
           echo "Changed files:"
           echo "$CHANGED_FILES"
 
-          # Check if common layer changed
-          if echo "$CHANGED_FILES" | grep -q "^lambdas/common/"; then
+          # Check if common layer changed. requirements.txt also forces
+          # a layer rebuild — bumping a dep wouldn't otherwise produce a
+          # new layer version.
+          if echo "$CHANGED_FILES" | grep -qE "^(lambdas/common/|requirements\.txt$)"; then
             echo "common=true" >> $GITHUB_OUTPUT
           else
             echo "common=false" >> $GITHUB_OUTPUT
@@ -71,7 +73,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.10"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -104,7 +106,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.10"
+          python-version: "3.13"
 
       - name: Install dependencies
         run: |
@@ -134,13 +136,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.10"
+          python-version: "3.13"
 
       - name: Package layer
         run: |
           mkdir -p python/lambdas
           cp -r lambdas/common python/lambdas/
-          python3.10 -m pip install --platform manylinux2014_x86_64 --only-binary=:all: -t python/ -r requirements.txt
+          python3.13 -m pip install --platform manylinux2014_x86_64 --only-binary=:all: -t python/ -r requirements.txt
           zip -r xomper-shared-packages.zip python
 
       - name: Deploy layer
@@ -152,7 +154,7 @@ jobs:
           LAYER_OUTPUT=$(aws lambda publish-layer-version \
             --layer-name xomper-shared-packages \
             --zip-file fileb://xomper-shared-packages.zip \
-            --compatible-runtimes python3.10 \
+            --compatible-runtimes python3.13 \
             --region $AWS_REGION \
             --output json)
 
@@ -199,7 +201,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: "3.10"
+          python-version: "3.13"
 
       - name: Package lambda
         run: |
