@@ -261,6 +261,89 @@ def get_league_chain(
     return chain
 
 
+def gather_chain_matchups(
+    chain: list[dict[str, Any]],
+    total_regular_weeks: int,
+    fetch_rosters_fn,
+    fetch_users_fn,
+    fetch_matchups_fn,
+    log_fn=None,
+) -> list[dict[str, Any]]:
+    """Walk every league in `chain`, pull users + rosters + every
+    regular-season week, pair matchups by `matchup_id`, and emit
+    MatchupHistoryRecord-shaped dicts. Used as input to
+    `compute_division_standings`.
+
+    Dependencies are passed in (rather than imported here) so this
+    stays free of Sleeper / boto3 coupling — the live callers wire
+    in `get_sleeper_league_rosters` / `_users` / `_matchups` from
+    `sleeper_helper`. Tests can pass fakes.
+
+    Skips leagues with `status == "pre_draft"` (no games yet).
+    """
+    records: list[dict[str, Any]] = []
+    for league in chain:
+        if league.get("status") == "pre_draft":
+            continue
+        league_id = league["league_id"]
+        season = league.get("season", "")
+        rosters = fetch_rosters_fn(league_id) or []
+        users = fetch_users_fn(league_id) or []
+        roster_by_id = {r["roster_id"]: r for r in rosters}
+        user_by_id = {u["user_id"]: u for u in users}
+
+        for week in range(1, total_regular_weeks + 1):
+            try:
+                week_matchups = fetch_matchups_fn(league_id, week)
+            except Exception as e:
+                if log_fn:
+                    log_fn(f"Week {week} matchup fetch failed for {league_id}: {e}")
+                continue
+
+            grouped: dict[int, list[dict[str, Any]]] = {}
+            for m in week_matchups or []:
+                mid = m.get("matchup_id")
+                if mid is None:
+                    continue
+                grouped.setdefault(mid, []).append(m)
+
+            for pair in grouped.values():
+                if len(pair) != 2:
+                    continue
+                a, b = pair
+                roster_a = roster_by_id.get(a["roster_id"]) or {}
+                roster_b = roster_by_id.get(b["roster_id"]) or {}
+                user_a = user_by_id.get(roster_a.get("owner_id") or "") or {}
+                user_b = user_by_id.get(roster_b.get("owner_id") or "") or {}
+                a_pts = float(a.get("points") or 0)
+                b_pts = float(b.get("points") or 0)
+                if a_pts > b_pts:
+                    winner = a["roster_id"]
+                elif b_pts > a_pts:
+                    winner = b["roster_id"]
+                else:
+                    winner = None
+
+                records.append({
+                    "league_id": league_id,
+                    "season": season,
+                    "week": week,
+                    "team_a_user_id": roster_a.get("owner_id") or "",
+                    "team_a_username": user_a.get("username") or "",
+                    "team_a_team_name": (user_a.get("metadata") or {}).get("team_name") or user_a.get("display_name") or "",
+                    "team_a_division": roster_a.get("settings", {}).get("division") or 0,
+                    "team_a_points": a_pts,
+                    "team_b_user_id": roster_b.get("owner_id") or "",
+                    "team_b_username": user_b.get("username") or "",
+                    "team_b_team_name": (user_b.get("metadata") or {}).get("team_name") or user_b.get("display_name") or "",
+                    "team_b_division": roster_b.get("settings", {}).get("division") or 0,
+                    "team_b_points": b_pts,
+                    "winner_roster_id": winner,
+                    "is_playoff": week > 14,
+                })
+    return records
+
+
 def division_name_map_from_league(league: dict[str, Any]) -> dict[int, str]:
     """Sleeper stores division names in `league.metadata.division_1`,
     `division_2`, ... Build a {1: "AFC East", 2: "NFC West", ...} dict.
