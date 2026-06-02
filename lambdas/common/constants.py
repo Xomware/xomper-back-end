@@ -50,6 +50,24 @@ AI_REVIEW_WEEKLY_PROMPT_VERSION = os.environ.get(
 )
 AI_REVIEW_WEEKLY_MEMORY_LOOKBACK = 6
 AI_REVIEW_WEEKLY_MAX_NEW_MEMORIES = 5
+
+# Week Preview (forward-looking Wednesday newsletter) constants.
+# Same OK season types as weekly — preview only fires while the
+# regular / post season is active. Same prompt-version env knob so
+# we can bump it without a redeploy.
+AI_REVIEW_WEEK_PREVIEW_PROMPT_VERSION = os.environ.get(
+    "AI_REVIEW_WEEK_PREVIEW_PROMPT_VERSION", "phase2-week-preview-2026-06-02"
+)
+AI_REVIEW_WEEK_PREVIEW_MAX_TOKENS = 7000
+AI_REVIEW_WEEK_PREVIEW_OK_SEASON_TYPES = ("regular", "post")
+AI_REVIEW_WEEK_PREVIEW_MEMORY_LOOKBACK = 6
+AI_REVIEW_WEEK_PREVIEW_MAX_NEW_MEMORIES = 4
+
+# NFL regular season week count — used by anything that needs to walk
+# every regular-season week (WC chain matchups, weekly_recap fallback,
+# week_preview). Defined here so notif_weekly_recap + week_preview +
+# notif_worldcup_movement all share one source of truth.
+TOTAL_REGULAR_WEEKS = 17
 AI_MEMORIES_TABLE = os.environ.get("AI_MEMORIES_TABLE", "xomper-ai-memories")
 
 # Admin user id for dry-run delivery (Dominick).

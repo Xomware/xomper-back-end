@@ -57,7 +57,7 @@ log = get_logger(__file__)
 # one of postDraft/preseason/weekly. `mock` is a read-only surface
 # for pre-seeded mock draft reports (iOS Draft tab mock cards); no
 # generator lambda writes this type — backfilled directly via boto3.
-REPORT_TYPES: tuple[str, ...] = ("postDraft", "preseason", "weekly", "mock")
+REPORT_TYPES: tuple[str, ...] = ("postDraft", "preseason", "weekly", "weekPreview", "mock")
 
 GSI_CREATED_AT = "created-at-index"
 
