@@ -17,7 +17,9 @@ content and sends again. Acceptable for a recap (low blast radius);
 if needed, gate behind a DynamoDB "last sent week" record.
 """
 from typing import Any
+import requests
 from lambdas.common.admin_only_filter import filter_to_admin_only
+from lambdas.common.constants import TOTAL_REGULAR_WEEKS
 from lambdas.common.cron_settings import get_cron_setting
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
@@ -39,6 +41,12 @@ from lambdas.common.ses_helper import send_emails_concurrently
 from lambdas.common.email_templates import (
     generate_weekly_recap_email,
     generate_weekly_recap_email_plain_text,
+)
+from lambdas.common.worldcup_helper import (
+    compute_division_standings,
+    division_name_map_from_league,
+    gather_chain_matchups,
+    get_league_chain,
 )
 
 log = get_logger(__file__)
@@ -140,6 +148,71 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         reverse=True,
     )
 
+    # Cumulative season standings — read directly from each roster's
+    # settings block (Sleeper's source of truth for W-L + PF). Sorted
+    # wins-DESC, then PF-DESC for the email's standings table.
+    def _roster_pf(r: dict[str, Any]) -> float:
+        s = r.get("settings") or {}
+        return float(s.get("fpts", 0)) + float(s.get("fpts_decimal", 0)) / 100.0
+
+    standings_rows: list[tuple[str, int, int, int, float]] = sorted(
+        [
+            (
+                team_name_for_roster(r["roster_id"]),
+                int((r.get("settings") or {}).get("wins", 0)),
+                int((r.get("settings") or {}).get("losses", 0)),
+                int((r.get("settings") or {}).get("ties", 0)),
+                _roster_pf(r),
+            )
+            for r in rosters
+        ],
+        key=lambda t: (t[1], t[4]),
+        reverse=True,
+    )
+
+    # Playoff bracket — only fetch from Sleeper once the playoffs are
+    # near (week >= 12) so we don't burn a network call every Tuesday
+    # in September. Sleeper materializes the bracket once the
+    # commissioner sets playoff_week_start in league settings.
+    bracket_rounds_payload: list[tuple[str, list[tuple[str, float, str, float]]]] | None = None
+    if target_week >= 12:
+        try:
+            br_resp = requests.get(
+                f"https://api.sleeper.app/v1/league/{league_id}/winners_bracket",
+                timeout=10,
+            )
+            bracket_raw = br_resp.json() if br_resp.status_code == 200 else []
+        except Exception as e:
+            log.warning(f"winners_bracket fetch failed: {e}")
+            bracket_raw = []
+        if bracket_raw:
+            bracket_rounds_payload = _bracket_to_rounds(
+                bracket_raw,
+                team_name_for_roster,
+            )
+
+    # World Cup standings — walk the league chain and aggregate
+    # divisional matchups across all seasons. Heavyweight (many
+    # Sleeper calls) so we compute once before the per-manager loop.
+    wc_full_payload: list[tuple[str, list[dict[str, Any]]]] | None = None
+    wc_by_user: dict[str, dict[str, Any]] = {}
+    try:
+        chain = get_league_chain(league_id, fetch_league_fn=get_sleeper_league)
+        head_league = chain[0] if chain else {}
+        div_names = division_name_map_from_league(head_league)
+        chain_matchups = gather_chain_matchups(
+            chain,
+            total_regular_weeks=TOTAL_REGULAR_WEEKS,
+            fetch_rosters_fn=get_sleeper_league_rosters,
+            fetch_users_fn=get_sleeper_league_users,
+            fetch_matchups_fn=get_sleeper_league_matchups,
+            log_fn=log.warning,
+        )
+        wc_standings = compute_division_standings(chain_matchups, div_names)
+        wc_full_payload, wc_by_user = _wc_to_template_payload(wc_standings)
+    except Exception as e:
+        log.warning(f"World Cup computation failed; skipping WC sections: {e}")
+
     push_sent = 0
     email_tasks: list[tuple[str, str, str, str]] = []
 
@@ -192,34 +265,29 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 or "Manager"
             )
             subject = f"Week {target_week} {league_name} recap"
-            html = generate_weekly_recap_email(
-                manager_name=manager_name,
-                league_name=league_name,
-                week=target_week,
-                user_team_name=user_team_name,
-                user_points=me_pts,
-                opponent_team_name=opp_team_name,
-                opponent_points=opp_pts,
-                user_won=user_won,
-                is_tie=is_tie,
-                league_high_team=top_team_name,
-                league_high_points=top_pts,
-                all_scores=all_scores,
-            )
-            text = generate_weekly_recap_email_plain_text(
-                manager_name=manager_name,
-                league_name=league_name,
-                week=target_week,
-                user_team_name=user_team_name,
-                user_points=me_pts,
-                opponent_team_name=opp_team_name,
-                opponent_points=opp_pts,
-                user_won=user_won,
-                is_tie=is_tie,
-                league_high_team=top_team_name,
-                league_high_points=top_pts,
-                all_scores=all_scores,
-            )
+            wc_personal = wc_by_user.get(owner_id)
+            template_kwargs: dict[str, Any] = {
+                "manager_name": manager_name,
+                "league_name": league_name,
+                "week": target_week,
+                "user_team_name": user_team_name,
+                "user_points": me_pts,
+                "opponent_team_name": opp_team_name,
+                "opponent_points": opp_pts,
+                "user_won": user_won,
+                "is_tie": is_tie,
+                "league_high_team": top_team_name,
+                "league_high_points": top_pts,
+                "all_scores": all_scores,
+                "standings": standings_rows,
+                "bracket_rounds": bracket_rounds_payload,
+                "wc_personal": wc_personal,
+                # Mark only the current recipient as `is_user` so the
+                # full-WC table highlights their row, not every row.
+                "wc_divisions": _mark_user_in_wc(wc_full_payload, owner_id) if wc_full_payload else None,
+            }
+            html = generate_weekly_recap_email(**template_kwargs)
+            text = generate_weekly_recap_email_plain_text(**template_kwargs)
             email_tasks.append((email, subject, html, text))
 
     email_sent, email_failed = (0, 0)
@@ -240,3 +308,133 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         },
         is_api=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Section payload builders
+# ---------------------------------------------------------------------------
+
+
+def _bracket_to_rounds(
+    bracket_raw: list[dict[str, Any]],
+    team_name_for_roster,
+) -> list[tuple[str, list[tuple[str, float, str, float]]]]:
+    """Convert Sleeper's winners_bracket array into the template's
+    (round_label, [(team_a, score_a, team_b, score_b)]) shape.
+
+    Sleeper item shape: {r: round, m: matchup_id, t1, t2 (roster ids
+    or {w: prev_m} placeholders), w, l (resolved winner/loser),
+    t1_from, t2_from}. Scores aren't in the bracket payload — we use
+    `None` for unplayed matchups so the template renders an "X vs Y"
+    line without scores.
+    """
+    rounds: dict[int, list[tuple[str, float | None, str, float | None]]] = {}
+    for item in bracket_raw:
+        rd = int(item.get("r") or 0)
+        if rd <= 0:
+            continue
+        t1 = item.get("t1")
+        t2 = item.get("t2")
+        a_name = team_name_for_roster(t1) if isinstance(t1, int) else "TBD"
+        b_name = team_name_for_roster(t2) if isinstance(t2, int) else "TBD"
+        # Scores not on the bracket payload; leave None.
+        rounds.setdefault(rd, []).append((a_name, None, b_name, None))
+
+    # Generic per-round labels — Sleeper bracket payloads don't carry
+    # explicit "Quarterfinal" / "Semifinal" tags, so derive from
+    # round count: last round is "Championship", second-to-last is
+    # "Semifinals", etc.
+    sorted_rounds = sorted(rounds.keys())
+    label_for: dict[int, str] = {}
+    total = len(sorted_rounds)
+    for idx, rd in enumerate(sorted_rounds):
+        depth_from_end = total - idx
+        if depth_from_end == 1:
+            label_for[rd] = "Championship"
+        elif depth_from_end == 2:
+            label_for[rd] = "Semifinals"
+        elif depth_from_end == 3:
+            label_for[rd] = "Quarterfinals"
+        else:
+            label_for[rd] = f"Round {rd}"
+
+    return [(label_for[rd], rounds[rd]) for rd in sorted_rounds]
+
+
+def _wc_to_template_payload(
+    wc_standings: list[tuple[int, str, list[Any]]],
+) -> tuple[list[tuple[str, list[dict[str, Any]]]], dict[str, dict[str, Any]]]:
+    """Convert `compute_division_standings` output into the template's
+    full-table shape AND a per-user lookup so the per-recipient
+    personal panel can be built without re-running the aggregation.
+
+    Returns:
+        (wc_divisions, by_user) where
+        wc_divisions = [(division_name, [{team_name, wins, losses,
+                       ties, points_for, status, is_user}])]
+        by_user      = {user_id: {division, position, status, wins,
+                       losses, ties, points_for, points_back}}
+    """
+    wc_divisions: list[tuple[str, list[dict[str, Any]]]] = []
+    by_user: dict[str, dict[str, Any]] = {}
+
+    for _div_id, div_name, teams in wc_standings:
+        # `teams` is sorted wins-DESC then PF-DESC. The conservative
+        # cutoff for top-2 is element index 1's wins (worst clinched
+        # wins) — anyone below that AND below by enough wins is
+        # eliminated; otherwise alive. The clinch_status field is set
+        # by clinch_for_division upstream.
+        cutoff_wins = teams[1].wins if len(teams) >= 2 else 0
+        team_dicts: list[dict[str, Any]] = []
+        for position, t in enumerate(teams, start=1):
+            team_dicts.append({
+                "team_name": t.team_name,
+                "user_id": t.user_id,
+                "wins": t.wins,
+                "losses": t.losses,
+                "ties": t.ties,
+                "points_for": t.points_for,
+                "status": t.clinch_status,
+                # `is_user` is filled in per-recipient via
+                # `_mark_user_in_wc`.
+                "is_user": False,
+            })
+            points_back = None
+            if position > 2 and t.clinch_status != "eliminated":
+                # Rough proxy — how many wins back from the 2-seed.
+                wins_back = max(cutoff_wins - t.wins, 0)
+                if wins_back > 0:
+                    points_back = float(wins_back) * 100.0  # placeholder magnitude
+            by_user[t.user_id] = {
+                "division": div_name,
+                "position": position,
+                "status": t.clinch_status,
+                "wins": t.wins,
+                "losses": t.losses,
+                "ties": t.ties,
+                "points_for": t.points_for,
+                "points_back": points_back,
+            }
+        wc_divisions.append((div_name, team_dicts))
+
+    return wc_divisions, by_user
+
+
+def _mark_user_in_wc(
+    wc_divisions: list[tuple[str, list[dict[str, Any]]]],
+    user_id: str,
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Return a copy of `wc_divisions` with `is_user=True` on the one
+    row whose `user_id` matches `user_id` (anywhere across divisions).
+    Lets each manager's email highlight only their own row without
+    re-aggregating everything per recipient."""
+    if not user_id:
+        return wc_divisions
+    out: list[tuple[str, list[dict[str, Any]]]] = []
+    for div_name, rows in wc_divisions:
+        out_rows = [
+            {**row, "is_user": row.get("user_id") == user_id}
+            for row in rows
+        ]
+        out.append((div_name, out_rows))
+    return out

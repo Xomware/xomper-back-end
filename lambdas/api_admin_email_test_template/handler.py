@@ -70,11 +70,13 @@ _LEAGUE_NAME = "CLT DYNASTY"
 # and offseason-safe.
 _FIXTURES: dict[str, dict[str, Any]] = {
     "weekly_recap": {
-        "subject": f"[TEST] Week 17 {_LEAGUE_NAME} recap",
+        "subject": f"[TEST] Week 14 {_LEAGUE_NAME} recap",
         "params": {
             "manager_name": "Dom",
             "league_name": _LEAGUE_NAME,
-            "week": 17,
+            # Week 14 = first playoff week — exercises both standings
+            # AND bracket sections in the sample.
+            "week": 14,
             "user_team_name": "Nvr 4get Da CLT",
             "user_points": 124.5,
             "opponent_team_name": "ktatich",
@@ -96,6 +98,72 @@ _FIXTURES: dict[str, dict[str, Any]] = {
                 ("gniadek", 88.7),
                 ("reesegriffin", 81.0),
                 ("Nico Suave", 72.1),
+            ],
+            # Cumulative standings — (team, wins, losses, ties, points_for).
+            "standings": [
+                ("Gangsters of Love",      11, 3, 0, 1763.4),
+                ("Nvr 4get Da CLT",        10, 4, 0, 1702.1),
+                ("ktatich",                 9, 5, 0, 1690.5),
+                ("The Goffather",           9, 5, 0, 1652.3),
+                ("Wake Forest Factory",     8, 6, 0, 1641.0),
+                ("Brock Party",             7, 7, 0, 1598.8),
+                ("Shits and Gibbles",       6, 8, 0, 1554.2),
+                ("Sinnott Committee",       6, 8, 0, 1521.7),
+                ("Shane Beamer's Burner",   5, 9, 0, 1502.0),
+                ("gniadek",                 4, 10, 0, 1480.4),
+                ("reesegriffin",            3, 11, 0, 1421.6),
+                ("Nico Suave",              2, 12, 0, 1380.9),
+            ],
+            # Playoff bracket — list of (round_label, [(team_a, score_a,
+            # team_b, score_b)]). None scores mean upcoming.
+            "bracket_rounds": [
+                ("Quarterfinals", [
+                    ("Gangsters of Love",   162.6, "Nico Suave",              72.1),
+                    ("Nvr 4get Da CLT",     124.5, "ktatich",                 102.3),
+                    ("The Goffather",       113.0, "Wake Forest Factory",     111.5),
+                    ("Brock Party",         105.9, "Shane Beamer's Burner",   89.6),
+                ]),
+                ("Semifinals", [
+                    ("Gangsters of Love",   None,  "Brock Party",             None),
+                    ("Nvr 4get Da CLT",     None,  "The Goffather",           None),
+                ]),
+                ("Championship", [
+                    ("TBD",                 None,  "TBD",                     None),
+                ]),
+            ],
+            # Personal World Cup snapshot for the recipient.
+            "wc_personal": {
+                "division": "East Division",
+                "position": 2,
+                "status": "clinched",
+                "wins": 7,
+                "losses": 4,
+                "ties": 0,
+                "points_for": 1284.3,
+                "points_back": None,
+            },
+            # Full WC standings by division, top-2 clinched.
+            "wc_divisions": [
+                ("East Division", [
+                    {"team_name": "Gangsters of Love",   "wins": 9, "losses": 2, "ties": 0, "points_for": 1422.0, "status": "clinched", "is_user": False},
+                    {"team_name": "Nvr 4get Da CLT",     "wins": 7, "losses": 4, "ties": 0, "points_for": 1284.3, "status": "clinched", "is_user": True},
+                    {"team_name": "Shits and Gibbles",   "wins": 4, "losses": 7, "ties": 0, "points_for": 1188.5, "status": "eliminated", "is_user": False},
+                ]),
+                ("West Division", [
+                    {"team_name": "ktatich",             "wins": 8, "losses": 3, "ties": 0, "points_for": 1351.2, "status": "clinched", "is_user": False},
+                    {"team_name": "The Goffather",       "wins": 7, "losses": 4, "ties": 0, "points_for": 1297.8, "status": "alive",    "is_user": False},
+                    {"team_name": "reesegriffin",        "wins": 2, "losses": 9, "ties": 0, "points_for": 1098.6, "status": "eliminated", "is_user": False},
+                ]),
+                ("North Division", [
+                    {"team_name": "Wake Forest Factory", "wins": 7, "losses": 4, "ties": 0, "points_for": 1306.4, "status": "clinched", "is_user": False},
+                    {"team_name": "Brock Party",         "wins": 6, "losses": 5, "ties": 0, "points_for": 1241.9, "status": "alive",    "is_user": False},
+                    {"team_name": "gniadek",             "wins": 3, "losses": 8, "ties": 0, "points_for": 1142.7, "status": "alive",    "is_user": False},
+                ]),
+                ("South Division", [
+                    {"team_name": "Sinnott Committee",   "wins": 6, "losses": 5, "ties": 0, "points_for": 1230.5, "status": "alive",    "is_user": False},
+                    {"team_name": "Shane Beamer's Burner","wins": 5, "losses": 6, "ties": 0, "points_for": 1198.0, "status": "alive",    "is_user": False},
+                    {"team_name": "Nico Suave",          "wins": 1, "losses": 10, "ties": 0, "points_for": 1054.1, "status": "eliminated", "is_user": False},
+                ]),
             ],
         },
     },
