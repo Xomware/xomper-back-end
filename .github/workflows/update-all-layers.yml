@@ -31,8 +31,10 @@ jobs:
             LAYER_ARN=$(aws lambda list-layer-versions \
               --layer-name xomper-shared-packages \
               --region $AWS_REGION \
+              --max-items 1 \
               --query 'LayerVersions[0].LayerVersionArn' \
-              --output text)
+              --output text \
+              | head -n 1)
             echo "Latest layer ARN: $LAYER_ARN"
             echo "layer_arn=$LAYER_ARN" >> $GITHUB_OUTPUT
           fi
