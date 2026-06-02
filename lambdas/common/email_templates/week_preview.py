@@ -50,7 +50,15 @@ def generate_week_preview_email(
     """
     safe_manager = _escape(manager_name)
     safe_league = _escape(league_name)
+
+    # Two-pass render. First extract every `##` heading so we can emit
+    # a table-of-contents pill row + slug the heading's `id=` for
+    # anchor links. Then render the body with the same slugs threaded
+    # through `_render_block`.
+    h2_sections = _extract_h2_sections(body_markdown or "")
+    toc_html = _toc_section(h2_sections) if h2_sections else ""
     body_html = _markdown_to_email_html(body_markdown or "")
+
     standings_html = _standings_section(standings) if standings else ""
     wc_html = _wc_section(wc_divisions) if wc_divisions else ""
 
@@ -68,6 +76,8 @@ def generate_week_preview_email(
             </td>
         </tr>
     </table>
+
+    {toc_html}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
@@ -155,11 +165,22 @@ def _markdown_to_email_html(md: str) -> str:
 def _render_block(block: str) -> str:
     # Headings
     if block.startswith("### "):
-        text = _inline(block[4:].strip())
-        return f'<h3 style="margin: 16px 0 6px; font-family: {FONT_DISPLAY}; font-size: 15px; color: {CHAMPION_GOLD}; font-weight: 700;">{text}</h3>'
+        raw = block[4:].strip()
+        text = _inline(raw)
+        return f'<h3 style="margin: 18px 0 6px; font-family: {FONT_DISPLAY}; font-size: 15px; color: {CHAMPION_GOLD}; font-weight: 700;">{text}</h3>'
     if block.startswith("## "):
-        text = _inline(block[3:].strip())
-        return f'<h2 style="margin: 24px 0 8px; font-family: {FONT_DISPLAY}; font-size: 18px; color: {CHAMPION_GOLD}; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">{text}</h2>'
+        raw = block[3:].strip()
+        text = _inline(raw)
+        slug = _slug(raw)
+        # Red color + uppercase + divider strip above act as visual
+        # bookmarks. `id={slug}` lets the TOC anchor links jump here
+        # in clients that respect them (Gmail web, Apple Mail).
+        return (
+            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 28px 0 8px;">'
+            f'<tr><td style="border-top: 2px solid {ACCENT_RED}; padding: 12px 0 0;">'
+            f'<h2 id="{slug}" style="margin: 0; font-family: {FONT_DISPLAY}; font-size: 19px; color: {ACCENT_RED}; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px;">{text}</h2>'
+            f'</td></tr></table>'
+        )
     if block.startswith("# "):
         text = _inline(block[2:].strip())
         return f'<h1 style="margin: 8px 0 12px; font-family: {FONT_DISPLAY}; font-size: 22px; color: {TEXT_PRIMARY}; font-weight: 700;">{text}</h1>'
@@ -170,6 +191,74 @@ def _render_block(block: str) -> str:
     # Plain paragraph — inline bold + bare line
     text = _inline(block.replace("\n", "<br/>"))
     return f'<p style="margin: 0 0 10px; line-height: 1.55;">{text}</p>'
+
+
+# ---------------------------------------------------------------------------
+# Table of contents + anchor helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_h2_sections(md: str) -> list[str]:
+    """Return the raw label for each `## Heading` in source order.
+    Used to build both the TOC pills and the `id=` slugs on the
+    rendered h2 tags."""
+    sections: list[str] = []
+    for line in md.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## ") and not stripped.startswith("### "):
+            sections.append(stripped[3:].strip())
+    return sections
+
+
+def _slug(text: str) -> str:
+    """URL-safe id for anchor links. Lowercase, alphanumerics + dashes."""
+    out: list[str] = []
+    for ch in text.lower():
+        if ch.isalnum():
+            out.append(ch)
+        elif ch in (" ", "-", "_"):
+            out.append("-")
+    slug = "".join(out).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "section"
+
+
+def _toc_section(headings: list[str]) -> str:
+    """TOC pill row — anchor links to each `##` section. Inline-styled
+    so it survives Gmail's CSS stripping. Anchor support varies by
+    client (works in Gmail web + Apple Mail, drops to no-op in Outlook
+    desktop) — when anchors don't fire, the row still acts as a
+    visible outline of the email's sections."""
+    if not headings:
+        return ""
+    pills = ""
+    for label in headings:
+        slug = _slug(label)
+        safe_label = _escape(label)
+        pills += (
+            f'<a href="#{slug}" '
+            f'style="display: inline-block; margin: 4px 6px 4px 0; '
+            f'padding: 6px 12px; font-family: {FONT_DISPLAY}; font-size: 11px; '
+            f'color: {ACCENT_RED}; text-decoration: none; '
+            f'background-color: {SURFACE_LIGHT}; border-radius: 999px; '
+            f'border: 1px solid {ACCENT_RED}; '
+            f'letter-spacing: 1px; text-transform: uppercase; font-weight: 700;">'
+            f'{safe_label}'
+            f'</a>'
+        )
+    return f"""
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+            <td style="padding: 0 24px 16px;">
+                <div style="padding: 8px 0 4px;">
+                    <div style="font-family: {FONT_DISPLAY}; font-size: 10px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px;">Jump to</div>
+                    {pills}
+                </div>
+            </td>
+        </tr>
+    </table>
+    """
 
 
 def _inline(text: str) -> str:
