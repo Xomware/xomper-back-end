@@ -175,17 +175,10 @@ def _render_block(block: str) -> str:
         return f'<h3 style="margin: 18px 0 6px; font-family: {FONT_DISPLAY}; font-size: 15px; color: {CHAMPION_GOLD}; font-weight: 700;">{text}</h3>'
     if block.startswith("## "):
         raw = block[3:].strip()
-        text = _inline(raw)
-        slug = _slug(raw)
-        # Red color + uppercase + divider strip above act as visual
-        # bookmarks. `id={slug}` lets the TOC anchor links jump here
-        # in clients that respect them (Gmail web, Apple Mail).
-        return (
-            f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 28px 0 8px;">'
-            f'<tr><td style="border-top: 2px solid {ACCENT_RED}; padding: 12px 0 0;">'
-            f'<h2 id="{slug}" style="margin: 0; font-family: {FONT_DISPLAY}; font-size: 19px; color: {ACCENT_RED}; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px;">{text}</h2>'
-            f'</td></tr></table>'
-        )
+        # Reuse the HTML-side h2 helper so AI-body sections and HTML
+        # sections (standings, WC) look identical. `_h2_section_header`
+        # injects the same red bar + uppercase title + id anchor.
+        return _h2_section_header(raw)
     if block.startswith("# "):
         text = _inline(block[2:].strip())
         return f'<h1 style="margin: 8px 0 12px; font-family: {FONT_DISPLAY}; font-size: 22px; color: {TEXT_PRIMARY}; font-weight: 700;">{text}</h1>'
@@ -230,35 +223,41 @@ def _slug(text: str) -> str:
 
 
 def _toc_section(headings: list[str]) -> str:
-    """Pill outline of the email's sections. Anchor-links to each `##`
-    section. Gmail strips the jump behavior (best-effort across clients)
-    — when anchors don't fire, the row still works as a visible "in
-    this email" outline at the top. Apple Mail honors the jumps."""
+    """Numbered Table of Contents. Each row anchor-links to its section
+    (some clients navigate, some don't — best-effort across the matrix).
+    Either way it acts as a real TOC the reader can scan up-top before
+    committing to a long email."""
     if not headings:
         return ""
-    pills = ""
-    for label in headings:
+    rows = ""
+    for idx, label in enumerate(headings, start=1):
         slug = _slug(label)
         safe_label = _escape(label)
-        pills += (
-            f'<a href="#{slug}" '
-            f'style="display: inline-block; margin: 4px 6px 4px 0; '
-            f'padding: 6px 12px; font-family: {FONT_DISPLAY}; font-size: 11px; '
-            f'color: {ACCENT_RED}; text-decoration: none; '
-            f'background-color: {SURFACE_LIGHT}; border-radius: 999px; '
-            f'border: 1px solid {ACCENT_RED}; '
-            f'letter-spacing: 1px; text-transform: uppercase; font-weight: 700;">'
-            f'{safe_label}'
-            f'</a>'
-        )
+        bg = SURFACE_LIGHT if (idx % 2 == 1) else "transparent"
+        rows += f"""
+        <tr>
+            <td style="padding: 10px 14px; background-color: {bg};">
+                <a href="#{slug}" style="text-decoration: none; color: {TEXT_PRIMARY}; font-family: {FONT_BODY}; font-size: 14px; font-weight: 600;">
+                    <span style="display: inline-block; width: 26px; color: {ACCENT_RED}; font-weight: 800;">{idx:02d}</span>
+                    {safe_label}
+                </a>
+            </td>
+        </tr>
+        """
     return f"""
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
-            <td style="padding: 0 24px 16px;">
-                <div style="padding: 8px 0 4px;">
-                    <div style="font-family: {FONT_DISPLAY}; font-size: 10px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 6px;">In this email</div>
-                    {pills}
-                </div>
+            <td style="padding: 0 24px 24px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+                       style="border: 1px solid {ACCENT_RED}; border-radius: 10px; overflow: hidden;">
+                    <tr style="background-color: {DARK_NAVY};">
+                        <td style="padding: 14px 14px 12px; border-bottom: 1px solid {ACCENT_RED};">
+                            <div style="font-family: {FONT_DISPLAY}; font-size: 10px; color: {TEXT_MUTED}; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 2px;">Newsletter</div>
+                            <div style="font-family: {FONT_DISPLAY}; font-size: 17px; color: {ACCENT_RED}; font-weight: 800; text-transform: uppercase; letter-spacing: 2px;">Table of Contents</div>
+                        </td>
+                    </tr>
+                    {rows}
+                </table>
             </td>
         </tr>
     </table>
@@ -266,16 +265,20 @@ def _toc_section(headings: list[str]) -> str:
 
 
 def _h2_section_header(label: str) -> str:
-    """Red h2 banner matching `_render_block`'s `## ...` output. Used
-    for the HTML-side sections (standings, WC) so they match the
-    AI-body section headers visually + carry an anchor id."""
+    """Red banner with a thick top divider, a number badge, and the
+    section label. Bigger landmark than the AI-body inline `## ...`
+    treatment — used by both `_render_block` and the HTML-side
+    section helpers so every section looks the same."""
     safe_label = _escape(label)
     slug = _slug(label)
     return f"""
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 28px 0 8px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin: 36px 0 12px;">
         <tr>
-            <td style="padding: 12px 24px 0; border-top: 2px solid {ACCENT_RED};">
-                <h2 id="{slug}" style="margin: 0; font-family: {FONT_DISPLAY}; font-size: 19px; color: {ACCENT_RED}; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px;">{safe_label}</h2>
+            <td style="height: 4px; background-color: {ACCENT_RED}; line-height: 4px; font-size: 0;">&nbsp;</td>
+        </tr>
+        <tr>
+            <td style="padding: 16px 24px 0;">
+                <h2 id="{slug}" style="margin: 0; font-family: {FONT_DISPLAY}; font-size: 22px; color: {ACCENT_RED}; font-weight: 800; text-transform: uppercase; letter-spacing: 2px;">{safe_label}</h2>
             </td>
         </tr>
     </table>
