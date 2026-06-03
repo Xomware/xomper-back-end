@@ -15,13 +15,14 @@ from __future__ import annotations
 
 from typing import Any
 
-import markdown as _markdown
-
 from lambdas.common.email_templates.base import (
     wrap_email_html,
     generate_section_title,
     generate_league_badge,
     generate_button,
+    generate_toc,
+    render_markdown_body,
+    extract_h2_sections,
     _escape,
     CHAMPION_GOLD, TEXT_PRIMARY, TEXT_SECONDARY,
     FONT_BODY, XOMPER_URL,
@@ -36,15 +37,14 @@ _REPORT_TYPE_DISPLAY: dict[str, str] = {
 
 
 def render_html(body_markdown: str) -> str:
-    """Convert the markdown body Claude produced into HTML.
-
-    Uses the `markdown` library's `extra` extension so we get tables,
-    fenced code, and definition lists if Claude ever leans on them.
-    Returns an empty string if the body is empty.
-    """
+    """Convert the markdown body Claude produced into HTML using the
+    shared styled renderer from `base.py`. Every email template
+    (week_preview, weekly_recap, ai_review) flows through the same
+    renderer so heading + paragraph styles stay consistent across the
+    inbox. Returns an empty string if the body is empty."""
     if not body_markdown:
         return ""
-    return _markdown.markdown(body_markdown, extensions=["extra"])
+    return render_markdown_body(body_markdown)
 
 
 def _report_type_label(report_type: str) -> str:
@@ -66,6 +66,12 @@ def _wrap_body_content(
 
     league_badge_html = generate_league_badge(league_name) if league_name else ""
 
+    # Pull out the AI body's `## Section` headings for the TOC card.
+    # Only emit the TOC when the body actually has 2+ sections so a
+    # short one-pager doesn't grow an awkward 1-row outline.
+    toc_labels = extract_h2_sections(body_markdown or "")
+    toc_html = generate_toc(toc_labels) if len(toc_labels) >= 2 else ""
+
     return f"""
     {generate_section_title(section_title)}
     {league_badge_html}
@@ -77,6 +83,8 @@ def _wrap_body_content(
             </td>
         </tr>
     </table>
+
+    {toc_html}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
