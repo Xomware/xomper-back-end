@@ -63,6 +63,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     week_override = body.get("week")
     dry_run = bool(body.get("dry_run", True))
     force = bool(body.get("force", False))
+    try:
+        seasons_back = int(body.get("seasons_back", 0) or 0)
+    except (TypeError, ValueError):
+        seasons_back = 0
     actor_id = admin_user.get("sleeper_user_id") or admin_user.get("email") or ""
 
     try:
@@ -70,6 +74,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             week=week_override,
             dry_run=dry_run,
             force=force,
+            seasons_back=seasons_back,
             created_by_user_id=admin_user.get("sleeper_user_id"),
         )
     except ReportAlreadyExistsError as e:

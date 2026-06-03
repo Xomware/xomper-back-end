@@ -53,6 +53,7 @@ from lambdas.common.errors import (
     ValidationError,
 )
 from lambdas.common.logger import get_logger
+from lambdas.common.season_resolver import resolve_historical_league
 from lambdas.common.ses_helper import send_emails_concurrently
 from lambdas.common.sleeper_helper import (
     get_nfl_state,
@@ -86,6 +87,7 @@ def run_week_preview(
     week: int | None = None,
     dry_run: bool = True,
     force: bool = False,
+    seasons_back: int = 0,
     created_by_user_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate + deliver one Week Preview newsletter for the active
@@ -99,6 +101,15 @@ def run_week_preview(
             are restricted to the admin only.
         force: When True, skips the idempotency guard. Used to
             re-generate a stored preview after a prompt tweak.
+        seasons_back: How many times to walk `previous_league_id`
+            from the active league. 0 (default) = current season,
+            1 = prior, 2 = two seasons ago, etc. When >0 the
+            season-type gate is bypassed (we're previewing
+            historical weeks on purpose), the matchups + rosters +
+            users come from the resolved historical league, and the
+            period uses that league's season. Idempotency still
+            keys on the active league_id so test runs against last
+            year's data don't collide with live cron output.
         created_by_user_id: Sleeper user id of the admin who triggered
             this run. None when fired from the EventBridge cron.
     """
@@ -117,7 +128,10 @@ def run_week_preview(
     nfl_season = str(nfl_state.get("season") or "")
     nfl_week_raw = nfl_state.get("week")
 
-    if season_type and season_type not in AI_REVIEW_WEEK_PREVIEW_OK_SEASON_TYPES:
+    # Season-type gate. Bypassed when previewing historical weeks
+    # (seasons_back > 0) since by definition we're targeting a
+    # finished season.
+    if seasons_back == 0 and season_type and season_type not in AI_REVIEW_WEEK_PREVIEW_OK_SEASON_TYPES:
         log.info(
             f"week_preview: season_type={season_type!r} not in "
             f"{AI_REVIEW_WEEK_PREVIEW_OK_SEASON_TYPES} — skipping"
@@ -126,6 +140,33 @@ def run_week_preview(
             "status": "skipped_offseason",
             "season_type": season_type,
         }
+
+    # Resolve the historical league when backfilling, then re-anchor
+    # the fetch league + season for the rest of the pipeline.
+    fetch_league_id = league_id
+    fetch_season = nfl_season
+    if seasons_back > 0:
+        historical_league = resolve_historical_league(
+            league_id,
+            seasons_back,
+            league_fetcher=get_sleeper_league,
+        )
+        prior_id = historical_league.get("league_id")
+        if not prior_id:
+            raise NotFoundError(
+                message=(
+                    f"Resolved historical league for seasons_back="
+                    f"{seasons_back} is missing a league_id"
+                ),
+                handler="week_preview_orchestrator",
+            )
+        fetch_league_id = str(prior_id)
+        fetch_season = str(historical_league.get("season") or nfl_season)
+        log.info(
+            f"week_preview: backfill seasons_back={seasons_back} -> "
+            f"league {fetch_league_id} season {fetch_season} "
+            f"(week {week or '?'})"
+        )
 
     # --- resolve target week -------------------------------------------------
     if week is not None:
@@ -143,7 +184,7 @@ def run_week_preview(
         except (TypeError, ValueError):
             resolved_week = 1
 
-    period = f"{nfl_season or 'unknown'}W{resolved_week:02d}"
+    period = f"{fetch_season or 'unknown'}W{resolved_week:02d}"
 
     # --- idempotency ---------------------------------------------------------
     if not force:
@@ -167,9 +208,10 @@ def run_week_preview(
             )
 
     # --- data load -----------------------------------------------------------
-    rosters = get_sleeper_league_rosters(league_id) or []
-    sleeper_users = get_sleeper_league_users(league_id) or []
-    matchups_raw = get_sleeper_league_matchups(league_id, resolved_week) or []
+    # When backfilling, every fetch goes against the historical league.
+    rosters = get_sleeper_league_rosters(fetch_league_id) or []
+    sleeper_users = get_sleeper_league_users(fetch_league_id) or []
+    matchups_raw = get_sleeper_league_matchups(fetch_league_id, resolved_week) or []
 
     user_by_id = {u["user_id"]: u for u in sleeper_users}
     roster_by_id = {r["roster_id"]: r for r in rosters}
@@ -257,11 +299,13 @@ def run_week_preview(
     ]
 
     # World Cup chain walk — best-effort. If anything errors, skip
-    # the WC sections rather than fail the whole preview.
+    # the WC sections rather than fail the whole preview. Anchored on
+    # the FETCH league when backfilling so historical chain matches
+    # the historical matchup data above.
     wc_full_email: list[tuple[str, list[dict[str, Any]]]] | None = None
     wc_for_prompt: list[dict[str, Any]] = []
     try:
-        chain = get_league_chain(league_id, fetch_league_fn=get_sleeper_league)
+        chain = get_league_chain(fetch_league_id, fetch_league_fn=get_sleeper_league)
         head_league = chain[0] if chain else {}
         div_names = division_name_map_from_league(head_league)
         chain_matchups = gather_chain_matchups(
@@ -301,7 +345,7 @@ def run_week_preview(
 
     prior_memories = ai_memories_store.list_recent_memories(
         league_id,
-        nfl_season,
+        fetch_season,
         limit=AI_REVIEW_WEEK_PREVIEW_MEMORY_LOOKBACK,
     )
 
@@ -309,7 +353,7 @@ def run_week_preview(
     system_blocks = build_system_blocks()
     user_prompt = build_user_prompt(
         league_name=league_name,
-        season=nfl_season,
+        season=fetch_season,
         week=resolved_week,
         matchup_pairs=matchup_pairs,
         standings=standings_rows,
@@ -331,11 +375,14 @@ def run_week_preview(
     metadata: dict[str, Any] = {
         "dry_run": dry_run,
         "force": force,
+        "seasons_back": seasons_back,
         "model": AI_REVIEW_DEFAULT_MODEL,
         "prompt_version": AI_REVIEW_WEEK_PREVIEW_PROMPT_VERSION,
         "token_usage": token_usage,
         "nfl_season": nfl_season,
         "nfl_season_type": season_type,
+        "fetch_league_id": fetch_league_id,
+        "fetch_season": fetch_season,
         "week": resolved_week,
         "envelope_parsed": parse_ok,
         "broadcast_at": None,
