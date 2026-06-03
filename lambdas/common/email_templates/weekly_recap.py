@@ -10,6 +10,8 @@ from lambdas.common.email_templates.base import (
     generate_section_title,
     generate_league_badge,
     generate_button,
+    generate_h2_red_header,
+    generate_toc,
     _escape,
     CHAMPION_GOLD, TEXT_PRIMARY, TEXT_SECONDARY, TEXT_MUTED,
     DARK_NAVY, SURFACE_LIGHT, SUCCESS_GREEN, ACCENT_RED,
@@ -101,6 +103,18 @@ def generate_weekly_recap_email(
     bracket_html = _bracket_section(bracket_rounds) if (bracket_rounds and week >= 12) else ""
     wc_html = _worldcup_section(wc_personal, wc_divisions) if (wc_personal or wc_divisions) else ""
 
+    # Build the TOC from whatever sections actually rendered. Match the
+    # exact labels we pass into generate_h2_red_header() so the anchor
+    # slugs line up.
+    toc_labels: list[str] = ["This week's scores"]
+    if standings_html:
+        toc_labels.append("Standings")
+    if bracket_html:
+        toc_labels.append("Playoff Bracket")
+    if wc_html:
+        toc_labels.append("World Cup")
+    toc_html = generate_toc(toc_labels)
+
     content = f"""
     {generate_section_title(f"Week {week} Recap")}
     {generate_league_badge(league_name) if league_name else ""}
@@ -123,7 +137,9 @@ def generate_weekly_recap_email(
         </tr>
     </table>
 
-    {_section_header("This week's scores")}
+    {toc_html}
+
+    {generate_h2_red_header("This week's scores")}
 
     <!-- This week's scoreboard -->
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
@@ -258,22 +274,10 @@ def generate_weekly_recap_email_plain_text(
 
 
 # ---------------------------------------------------------------------------
-# Section renderers — HTML helpers kept private to this module
+# Section renderers — HTML helpers kept private to this module.
+# Header rendering (h2 red + h3 gold + TOC) lives in base.py and is
+# shared across every template.
 # ---------------------------------------------------------------------------
-
-
-def _section_header(label: str) -> str:
-    """Inline section divider with uppercase label. Matches the
-    `generate_section_title` look-and-feel but smaller (sub-sections)."""
-    return f"""
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
-        <tr>
-            <td style="padding: 0 24px 8px; font-family: {FONT_DISPLAY}; font-size: 11px; color: {TEXT_MUTED}; letter-spacing: 1px; text-transform: uppercase;">
-                {_escape(label)}
-            </td>
-        </tr>
-    </table>
-    """
 
 
 def _standings_section(
@@ -296,7 +300,7 @@ def _standings_section(
         </tr>
         """
     return f"""
-    {_section_header("Standings")}
+    {generate_h2_red_header("Standings")}
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         <tr>
             <td style="padding: 0 24px 16px;">
@@ -359,7 +363,7 @@ def _bracket_section(
         </tr>
         """
     return f"""
-    {_section_header("Playoff Bracket")}
+    {generate_h2_red_header("Playoff Bracket")}
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
         {blocks}
     </table>
@@ -462,7 +466,7 @@ def _worldcup_section(
         return ""
 
     return f"""
-    {_section_header("World Cup")}
+    {generate_h2_red_header("World Cup")}
     {personal_block}
     {full_block}
     """
