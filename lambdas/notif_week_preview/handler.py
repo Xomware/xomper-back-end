@@ -66,12 +66,17 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     week_override = event.get("week")
     dry_run = bool(event.get("dry_run", False)) or cron_test_mode
     force = bool(event.get("force", False))
+    try:
+        seasons_back = int(event.get("seasons_back", 0) or 0)
+    except (TypeError, ValueError):
+        seasons_back = 0
 
     try:
         result = run_week_preview(
             week=week_override,
             dry_run=dry_run,
             force=force,
+            seasons_back=seasons_back,
         )
     except Exception as e:
         # Swallow + log so EventBridge doesn't retry. Recovery is via
