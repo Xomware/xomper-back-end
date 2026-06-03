@@ -109,6 +109,17 @@ def send_email(
             body_snippet=text_body,
             template=template,
         )
+        # Persist full payload to Supabase email_archive so admin can
+        # view + resend later. Best-effort — failures here MUST NOT
+        # break the success path of the email send.
+        _archive_email(
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+            message_id=message_id,
+            template=template,
+        )
         return {"success": True, "message_id": message_id, "error": None}
     except ClientError as err:
         error = err.response['Error']
@@ -167,3 +178,40 @@ def send_emails_concurrently(
 
     successes = sum(1 for r in results if r.get("success"))
     return successes, len(results) - successes
+
+
+def _archive_email(
+    *,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    text_body: str,
+    message_id: Optional[str],
+    template: Optional[str],
+) -> None:
+    """Write a row to Supabase `email_archive`. Failures are caught +
+    logged but never re-raised — archiving is best-effort, the send
+    path must not fail because Supabase is unreachable.
+
+    Called from `send_email` after every successful SES delivery.
+    Powers the admin Email Archive screen (view + resend).
+    """
+    try:
+        # Lazy import + lazy URL fetch keeps cold-start light and lets
+        # the Supabase helper layer remain optional for unit tests.
+        from lambdas.common.supabase_helper import _post  # type: ignore[attr-defined]
+        _post(
+            "email_archive",
+            {
+                "subject": subject,
+                "recipient_email": to_email,
+                "html_body": html_body,
+                "text_body": text_body,
+                "message_id": message_id,
+                "template": template,
+            },
+            "Archive email send",
+        )
+    except Exception as err:
+        # Don't propagate — archiving is non-critical.
+        log.warning(f"email_archive write failed (non-fatal): {err}")
