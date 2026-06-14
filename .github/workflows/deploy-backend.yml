@@ -214,71 +214,74 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          FUNCTION_NAME="xomper-${{ matrix.lambda }}"
-          # Convert underscores to hyphens for AWS function names
-          FUNCTION_NAME=$(echo $FUNCTION_NAME | tr '_' '-')
+          # Resolve the real AWS function name(s) for this handler dir.
+          # Almost every handler deploys 1:1 as `xomper-<dir-dashed>` (the
+          # terraform `name` equals the handler_dir dashed). A few handler
+          # dirs map to MULTIPLE functions with bespoke terraform names — e.g.
+          # `notif_close_game_alert` builds BOTH `xomper-notif-close-game-sun`
+          # and `xomper-notif-close-game-mon` (separate Sun/Mon schedules).
+          # The old 1:1 derivation produced `xomper-notif-close-game-alert`,
+          # a phantom function, so close_game code never deployed. Override
+          # the mapping for those cases; default everything else to 1:1.
+          case "${{ matrix.lambda }}" in
+            notif_close_game_alert)
+              TARGET_FUNCTIONS="xomper-notif-close-game-sun xomper-notif-close-game-mon" ;;
+            *)
+              TARGET_FUNCTIONS="xomper-$(echo '${{ matrix.lambda }}' | tr '_' '-')" ;;
+          esac
 
-          echo "Deploying code for $FUNCTION_NAME"
+          for FUNCTION_NAME in $TARGET_FUNCTIONS; do
+            echo "Deploying code for $FUNCTION_NAME"
 
-          # Confirm the function exists; bail loudly ONLY if it genuinely
-          # doesn't (terraform hasn't created it yet). We must NOT hard-gate
-          # on State=Active: a function that's `Inactive` (offseason — not
-          # invoked in 2+ weeks, AWS idles it) or `Failed` (left over from a
-          # prior interrupted update) would deadlock here forever, because the
-          # very `update-function-code` below is what reactivates/recovers it.
-          STATE=$(aws lambda get-function-configuration \
-            --function-name $FUNCTION_NAME --region $AWS_REGION \
-            --query 'State' --output text 2>/dev/null || echo "MISSING")
-          if [ "$STATE" = "MISSING" ]; then
-            echo "::error::Lambda $FUNCTION_NAME does not exist — terraform may not have created it yet. Rerun after the terraform workflow completes."
-            exit 1
-          fi
-          echo "Current state: $STATE — proceeding (update reactivates Inactive / recovers Failed)."
-          # Best-effort settle if mid-update (Pending). Never hard-fail here —
-          # the ResourceConflictException retry loop below is the real guard.
-          aws lambda wait function-active --function-name $FUNCTION_NAME --region $AWS_REGION 2>/dev/null || true
-
-          # Retry the code update on ResourceConflictException up to 3 times
-          # with backoff — covers the narrow window where terraform has
-          # finished a create but the lambda's state-machine is still
-          # propagating to `update-function-code`.
-          for attempt in 1 2 3; do
-            if aws lambda update-function-code \
-              --function-name $FUNCTION_NAME \
-              --zip-file fileb://${{ matrix.lambda }}.zip \
-              --region $AWS_REGION 2>&1 | tee /tmp/upd-$attempt.log; then
-              break
-            fi
-            if ! grep -q "ResourceConflictException" /tmp/upd-$attempt.log; then
-              echo "::error::Lambda code update failed (non-retryable)"
+            # Confirm the function exists; bail ONLY if it genuinely doesn't
+            # (terraform hasn't created it yet). Do NOT hard-gate on
+            # State=Active: an `Inactive` (offseason-idled) or `Failed` function
+            # would deadlock, since the update-function-code below is what
+            # reactivates/recovers it.
+            STATE=$(aws lambda get-function-configuration \
+              --function-name $FUNCTION_NAME --region $AWS_REGION \
+              --query 'State' --output text 2>/dev/null || echo "MISSING")
+            if [ "$STATE" = "MISSING" ]; then
+              echo "::error::Lambda $FUNCTION_NAME does not exist — terraform may not have created it yet. Rerun after the terraform workflow completes."
               exit 1
             fi
-            echo "ResourceConflictException on attempt $attempt — sleeping $((attempt * 10))s before retry"
-            sleep $((attempt * 10))
+            echo "Current state: $STATE — proceeding (update reactivates Inactive / recovers Failed)."
+            # Best-effort settle if mid-update (Pending). Never hard-fail —
+            # the ResourceConflictException retry loop below is the real guard.
+            aws lambda wait function-active --function-name $FUNCTION_NAME --region $AWS_REGION 2>/dev/null || true
+
+            # Retry the code update on ResourceConflictException up to 3 times.
+            for attempt in 1 2 3; do
+              if aws lambda update-function-code \
+                --function-name $FUNCTION_NAME \
+                --zip-file fileb://${{ matrix.lambda }}.zip \
+                --region $AWS_REGION 2>&1 | tee /tmp/upd-$FUNCTION_NAME-$attempt.log; then
+                break
+              fi
+              if ! grep -q "ResourceConflictException" /tmp/upd-$FUNCTION_NAME-$attempt.log; then
+                echo "::error::Lambda code update failed (non-retryable)"
+                exit 1
+              fi
+              echo "ResourceConflictException on attempt $attempt — sleeping $((attempt * 10))s before retry"
+              sleep $((attempt * 10))
+            done
+
+            echo "Waiting for function update to complete..."
+            aws lambda wait function-updated --function-name $FUNCTION_NAME --region $AWS_REGION
+
+            # If layer was updated, also update config (after code update completes).
+            if [ "${{ needs.deploy-layer.outputs.layer_arn }}" != "" ]; then
+              echo "Updating layer configuration for $FUNCTION_NAME"
+              aws lambda update-function-configuration \
+                --function-name $FUNCTION_NAME \
+                --layers ${{ needs.deploy-layer.outputs.layer_arn }} \
+                --region $AWS_REGION
+              echo "Waiting for configuration update to complete..."
+              aws lambda wait function-updated --function-name $FUNCTION_NAME --region $AWS_REGION
+            fi
+
+            echo "✅ $FUNCTION_NAME deployment complete"
           done
-
-          # Wait for function to finish updating before config change
-          echo "Waiting for function update to complete..."
-          aws lambda wait function-updated \
-            --function-name $FUNCTION_NAME \
-            --region $AWS_REGION
-
-          # If layer was updated, also update config (only after code update completes)
-          if [ "${{ needs.deploy-layer.outputs.layer_arn }}" != "" ]; then
-            echo "Updating layer configuration for $FUNCTION_NAME"
-            aws lambda update-function-configuration \
-              --function-name $FUNCTION_NAME \
-              --layers ${{ needs.deploy-layer.outputs.layer_arn }} \
-              --region $AWS_REGION
-
-            # Wait for config update to complete
-            echo "Waiting for configuration update to complete..."
-            aws lambda wait function-updated \
-              --function-name $FUNCTION_NAME \
-              --region $AWS_REGION
-          fi
-
-          echo "✅ $FUNCTION_NAME deployment complete"
 
   summary:
     needs:
