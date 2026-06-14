@@ -52,6 +52,7 @@ _ALLOWED_CRON_KEYS: tuple[str, ...] = (
     "notif_close_game_alert",
     "notif_worldcup_movement",
     "notif_ai_review_weekly",
+    "notif_week_preview",
 )
 
 

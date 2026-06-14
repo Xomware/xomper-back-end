@@ -220,17 +220,23 @@ jobs:
 
           echo "Deploying code for $FUNCTION_NAME"
 
-          # Wait for any in-flight infra updates to settle before our code push.
-          # Terraform in xomper-infrastructure may still be creating/updating
-          # this lambda concurrently — pushing code while it's in `Pending`
-          # state hits ResourceConflictException. `function-active` waits up
-          # to 10 minutes for the function to reach Active state. If the
-          # lambda doesn't exist yet (terraform hasn't run), bail loudly so
-          # the human can rerun once terraform finishes.
-          if ! aws lambda wait function-active --function-name $FUNCTION_NAME --region $AWS_REGION 2>/dev/null; then
-            echo "::error::Lambda $FUNCTION_NAME not yet Active — terraform may still be applying. Rerun this job after the terraform workflow completes."
+          # Confirm the function exists; bail loudly ONLY if it genuinely
+          # doesn't (terraform hasn't created it yet). We must NOT hard-gate
+          # on State=Active: a function that's `Inactive` (offseason — not
+          # invoked in 2+ weeks, AWS idles it) or `Failed` (left over from a
+          # prior interrupted update) would deadlock here forever, because the
+          # very `update-function-code` below is what reactivates/recovers it.
+          STATE=$(aws lambda get-function-configuration \
+            --function-name $FUNCTION_NAME --region $AWS_REGION \
+            --query 'State' --output text 2>/dev/null || echo "MISSING")
+          if [ "$STATE" = "MISSING" ]; then
+            echo "::error::Lambda $FUNCTION_NAME does not exist — terraform may not have created it yet. Rerun after the terraform workflow completes."
             exit 1
           fi
+          echo "Current state: $STATE — proceeding (update reactivates Inactive / recovers Failed)."
+          # Best-effort settle if mid-update (Pending). Never hard-fail here —
+          # the ResourceConflictException retry loop below is the real guard.
+          aws lambda wait function-active --function-name $FUNCTION_NAME --region $AWS_REGION 2>/dev/null || true
 
           # Retry the code update on ResourceConflictException up to 3 times
           # with backoff — covers the narrow window where terraform has

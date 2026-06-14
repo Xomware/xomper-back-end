@@ -1,6 +1,9 @@
 """
 Notification — Close Game Alert (scheduled, Sunday + Monday primetime)
 ======================================================================
+Offseason guard added (#89); redeploy nudged through the hardened
+deploy precheck that no longer dead-locks on Inactive functions.
+
 At Sun 8pm ET and Mon 8pm ET, scans live matchup scores for the
 active league. For any matchup where the score is within 10 points,
 pushes both managers an alert.
