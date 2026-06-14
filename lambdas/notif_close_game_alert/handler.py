@@ -22,6 +22,7 @@ from typing import Any
 
 from lambdas.common.admin_only_filter import filter_to_admin_only
 from lambdas.common.cron_settings import get_cron_setting
+from lambdas.common.season_guard import offseason_skip
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
@@ -67,7 +68,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     league_id = league_row["league_id"]
     nfl_state = get_nfl_state()
-    week = int(event.get("week") if isinstance(event, dict) and event.get("week") else nfl_state.get("week", 1))
+    week_override = event.get("week") if isinstance(event, dict) else None
+
+    # Offseason guard — no live games to alert on once the season ends.
+    skip = offseason_skip(nfl_state, LAMBDA_CRON_KEY, force=bool(week_override))
+    if skip:
+        return skip
+
+    week = int(week_override if week_override else nfl_state.get("week", 1))
 
     log.info(f"Scanning live scores for week {week} in league {league_id}")
 

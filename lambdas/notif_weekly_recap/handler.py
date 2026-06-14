@@ -21,6 +21,7 @@ import requests
 from lambdas.common.admin_only_filter import filter_to_admin_only
 from lambdas.common.constants import TOTAL_REGULAR_WEEKS
 from lambdas.common.cron_settings import get_cron_setting
+from lambdas.common.season_guard import offseason_skip
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
@@ -86,6 +87,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     nfl_state = get_nfl_state()
     current_week = nfl_state.get("week", 1)
     week_override = event.get("week") if isinstance(event, dict) else None
+
+    # Offseason guard (admin-cron-settings is NOT enough — a human has to
+    # remember to toggle it). A manual week override bypasses so backfill
+    # still works. Without this, the Tue 9am cron recapped "Week 1" in
+    # June because nfl_state.week fell back to 1.
+    skip = offseason_skip(nfl_state, LAMBDA_CRON_KEY, force=week_override is not None)
+    if skip:
+        return skip
+
     target_week = int(week_override) if week_override else max(current_week - 1, 1)
 
     log.info(f"Recapping week {target_week} for league {league_id} ({league_name})")
