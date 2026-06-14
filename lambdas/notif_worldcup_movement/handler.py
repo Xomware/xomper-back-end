@@ -36,6 +36,7 @@ from boto3.dynamodb.conditions import Key
 
 from lambdas.common.admin_only_filter import filter_to_admin_only
 from lambdas.common.cron_settings import get_cron_setting
+from lambdas.common.season_guard import offseason_skip
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
@@ -48,6 +49,7 @@ from lambdas.common.sleeper_helper import (
     get_sleeper_league_rosters,
     get_sleeper_league_users,
     get_sleeper_league_matchups,
+    get_nfl_state,
 )
 from lambdas.common.sns_helper import send_push_to_users
 from lambdas.common.push_templates import (
@@ -100,6 +102,15 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if not league_row.get("has_taxi") or not league_row.get("is_dynasty"):
         log.info("Active league not World-Cup eligible (needs has_taxi + is_dynasty). Skipping.")
         return success_response({"sent": 0, "reason": "not world-cup eligible"}, is_api=False)
+
+    # Offseason guard — standings don't move once the season ends. A
+    # manual week/games_remaining override bypasses for backfill/testing.
+    _override = isinstance(event, dict) and (
+        event.get("week") is not None or event.get("games_remaining") is not None
+    )
+    skip = offseason_skip(get_nfl_state(), LAMBDA_CRON_KEY, force=bool(_override))
+    if skip:
+        return skip
 
     head_league_id = league_row["league_id"]
     games_remaining = int(
