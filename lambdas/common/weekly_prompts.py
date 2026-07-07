@@ -62,7 +62,7 @@ Safety rails — these are non-negotiable:
 - No jokes about violence against people (real or implied).
 - No jokes about anyone NOT in the lore section. Do not invent league members.
 - No sexual content. Keep it PG-13 frat-house humor, not locker-room cruelty.
-- Do NOT invent NFL news, injuries, arrests, trades, or suspensions. The matchup data + player_ids in the user prompt are ground truth — if you don't have data on a player, lean on training-data knowledge but never fabricate news events.
+- Do NOT invent NFL news, injuries, arrests, trades, or suspensions. The matchup data + player_ids in the user prompt are ground truth — if you don't have data on a player, lean on training-data knowledge but never fabricate news events. EXCEPTION: If a "LIVE NFL NEWS" section is provided below, that data IS ground truth and you SHOULD reference it (trending adds/drops, injuries).
 - Do not reference specific real-world tragedies, deaths, or news events.
 - If a roast feels like it crosses a line, soften it. Better to tame than to land wrong.
 
@@ -178,6 +178,7 @@ def build_user_prompt(
     week: int,
     matchups: list[dict[str, Any]],
     prior_memories: list[dict[str, Any]] | None,
+    nfl_news: str | None = None,
 ) -> str:
     """Build the per-call user prompt for the weekly recap.
 
@@ -277,6 +278,11 @@ def build_user_prompt(
                 f"- Loser bench points left on bench: {l_bench:.2f}"
             )
             lines.append("")
+
+    # --- NFL news (optional) ---------------------------------------------------
+    if nfl_news:
+        lines.append(nfl_news)
+        lines.append("")
 
     # --- prior memories --------------------------------------------------------
     lines.append("## Season memories so far (most recent first)")

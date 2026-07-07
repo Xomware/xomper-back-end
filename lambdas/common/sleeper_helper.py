@@ -122,3 +122,22 @@ def get_previous_league_id(league_id: str) -> str | None:
     if prev in (None, "", "0"):
         return None
     return str(prev)
+
+
+def get_trending_players(
+    add_drop: str = "add",
+    lookback_hours: int = 24,
+    limit: int = 25,
+) -> list[dict[str, Any]]:
+    """Fetch trending adds or drops from Sleeper.
+
+    Args:
+        add_drop: "add" for trending adds, "drop" for trending drops
+        lookback_hours: Hours to look back (24 or 48)
+        limit: Max players to return
+
+    Returns:
+        List of {player_id, count} dicts sorted by activity
+    """
+    url = f"{SLEEPER_URL_BASE}/players/nfl/trending/{add_drop}?lookback_hours={lookback_hours}&limit={limit}"
+    return _get(url, f"Error fetching trending {add_drop}s")
