@@ -63,6 +63,7 @@ from lambdas.common.errors import (
 from lambdas.common.logger import get_logger
 from lambdas.common.season_resolver import resolve_historical_league
 from lambdas.common.ses_helper import send_emails_concurrently
+from lambdas.common.nfl_news import fetch_nfl_news, format_news_for_prompt
 from lambdas.common.sleeper_helper import (
     get_nfl_state,
     get_previous_league_id,
@@ -317,6 +318,14 @@ def run_weekly(
         league_id, season, limit=AI_REVIEW_WEEKLY_MEMORY_LOOKBACK
     )
 
+    # --- fetch live NFL news (best-effort) -----------------------------------
+    rostered_player_ids: set[str] = set()
+    for roster in rosters:
+        for pid in roster.get("players") or []:
+            rostered_player_ids.add(str(pid))
+    news_data = fetch_nfl_news(rostered_player_ids=rostered_player_ids)
+    nfl_news_block = format_news_for_prompt(news_data)
+
     # --- prompts + generate --------------------------------------------------
     system_blocks = build_system_blocks()
     user_prompt = build_user_prompt(
@@ -325,6 +334,7 @@ def run_weekly(
         week=resolved_week,
         matchups=matchups,
         prior_memories=prior_memories,
+        nfl_news=nfl_news_block,
     )
 
     raw_text, token_usage = claude_helper.generate(
