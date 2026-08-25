@@ -96,3 +96,12 @@ ADMIN_LOG_GROUP_ALLOWLIST = {
     "leagues-update": "/aws/lambda/xomper-api-admin-leagues-update",
     "audit-list": "/aws/lambda/xomper-api-admin-audit-list",
 }
+
+# Warehouse (Phase 5)
+#
+# Defaults match the names Terraform creates in xomper-infrastructure, so a
+# local run without env vars still points at the real resources rather than
+# failing on a KeyError.
+WAREHOUSE_BUCKET_NAME = os.environ.get("WAREHOUSE_BUCKET", "xomper-warehouse")
+PLAYERS_TABLE_NAME = os.environ.get("PLAYERS_TABLE", "xomper-players")
+STATS_TABLE_NAME = os.environ.get("STATS_TABLE", "xomper-stats-current")
