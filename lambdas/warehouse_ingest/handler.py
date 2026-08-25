@@ -66,6 +66,9 @@ PROJECTIONS_URL = (
 # it. The setting is not `http_useragent`, which does not exist.
 USER_AGENT = "xomper-warehouse-ingest/1.0"
 
+# The only writable path in a Lambda execution environment.
+EPHEMERAL_DIR = "/tmp"
+
 VALUED_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
 
 # Fields the frontend actually needs. The full dump is ~5 MB; this is the
@@ -85,7 +88,16 @@ def _connect() -> duckdb.DuckDBPyConnection:
     # custom_user_agent is connect-time only. `SET` after the database is
     # running raises "Cannot change custom_user_agent setting while database
     # is running", so it has to go in the config dict.
-    con = duckdb.connect(config={"custom_user_agent": USER_AGENT})
+    con = duckdb.connect(config={
+        "custom_user_agent": USER_AGENT,
+        # Lambda has no writable HOME. Without these DuckDB fails on connect
+        # with "IO Error: Can't find the home directory at ''" before a single
+        # query runs. /tmp is the only writable path in the execution
+        # environment, and it survives for the life of the container so a warm
+        # invoke reuses the extensions rather than downloading them again.
+        "home_directory": EPHEMERAL_DIR,
+        "extension_directory": f"{EPHEMERAL_DIR}/duckdb_extensions",
+    })
     con.execute("INSTALL json; LOAD json;")
     con.execute("INSTALL httpfs; LOAD httpfs;")
 
