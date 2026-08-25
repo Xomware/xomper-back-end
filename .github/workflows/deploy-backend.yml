@@ -182,9 +182,22 @@ jobs:
           FUNCTION_NAME=$(echo $FUNCTION_NAME | tr '_' '-')
 
           echo "Updating layer for $FUNCTION_NAME"
+
+          # --layers REPLACES the whole list. Any function carrying an extra
+          # layer beyond the shared one loses it on every deploy -- which is
+          # exactly what happened to xomper-warehouse-ingest and its DuckDB
+          # layer. Read the current extras back and pass them through.
+          EXTRA_LAYERS=$(aws lambda get-function-configuration \
+            --function-name $FUNCTION_NAME \
+            --query "Layers[?!contains(Arn, 'xomper-shared-packages')].Arn" \
+            --output text --region $AWS_REGION 2>/dev/null | tr '\t' ' ')
+          if [ -n "$EXTRA_LAYERS" ]; then
+            echo "Preserving extra layers: $EXTRA_LAYERS"
+          fi
+
           aws lambda update-function-configuration \
             --function-name $FUNCTION_NAME \
-            --layers ${{ needs.deploy-layer.outputs.layer_arn }} \
+            --layers ${{ needs.deploy-layer.outputs.layer_arn }} $EXTRA_LAYERS \
             --region $AWS_REGION || echo "Function $FUNCTION_NAME not found, skipping..."
 
   deploy-changed-lambdas:
@@ -272,9 +285,20 @@ jobs:
             # If layer was updated, also update config (after code update completes).
             if [ "${{ needs.deploy-layer.outputs.layer_arn }}" != "" ]; then
               echo "Updating layer configuration for $FUNCTION_NAME"
+
+              # See the note in update-all-lambdas-layer: --layers replaces the
+              # whole list, so extras have to be read back and passed through.
+              EXTRA_LAYERS=$(aws lambda get-function-configuration \
+                --function-name $FUNCTION_NAME \
+                --query "Layers[?!contains(Arn, 'xomper-shared-packages')].Arn" \
+                --output text --region $AWS_REGION 2>/dev/null | tr '\t' ' ')
+              if [ -n "$EXTRA_LAYERS" ]; then
+                echo "Preserving extra layers: $EXTRA_LAYERS"
+              fi
+
               aws lambda update-function-configuration \
                 --function-name $FUNCTION_NAME \
-                --layers ${{ needs.deploy-layer.outputs.layer_arn }} \
+                --layers ${{ needs.deploy-layer.outputs.layer_arn }} $EXTRA_LAYERS \
                 --region $AWS_REGION
               echo "Waiting for configuration update to complete..."
               aws lambda wait function-updated --function-name $FUNCTION_NAME --region $AWS_REGION
