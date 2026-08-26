@@ -105,3 +105,7 @@ ADMIN_LOG_GROUP_ALLOWLIST = {
 WAREHOUSE_BUCKET_NAME = os.environ.get("WAREHOUSE_BUCKET", "xomper-warehouse")
 PLAYERS_TABLE_NAME = os.environ.get("PLAYERS_TABLE", "xomper-players")
 STATS_TABLE_NAME = os.environ.get("STATS_TABLE", "xomper-stats-current")
+
+# Platform identity (Phase 4.6). Cognito holds credentials; this table holds
+# what Cognito does not — which Sleeper account a user has linked.
+PLATFORM_USERS_TABLE = os.environ.get("PLATFORM_USERS_TABLE", "xomper-users")
