@@ -71,13 +71,28 @@ EPHEMERAL_DIR = "/tmp"
 
 VALUED_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
 
-# Fields the frontend actually needs. The full dump is ~5 MB; this is the
-# subset that drives names, positions and the cross-platform id crosswalk.
+# Fields the frontend actually reads.
+#
+# Sleeper's /players/nfl dump is 14.6 MB and the browser downloads all of it
+# every session. This is the subset the app touches, counted from usage across
+# the Angular source rather than guessed: position (68 references), status
+# (53), team (49), first/last name (12 each), number, years_exp,
+# injury_status, age. Plus the espn/yahoo ids, which nothing renders but which
+# are the cross-platform crosswalk.
+#
+# Adding a field here is cheap; omitting one the UI reads is not. An earlier
+# version of this list left out status, injury_status, age, years_exp and
+# number, which would have blanked those in every player view.
 PLAYER_FIELDS = (
     "first_name",
     "last_name",
     "position",
     "team",
+    "status",
+    "injury_status",
+    "age",
+    "years_exp",
+    "number",
     "espn_id",
     "yahoo_id",
     "search_rank",
