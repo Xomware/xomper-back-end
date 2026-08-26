@@ -254,9 +254,20 @@ jobs:
           # The old 1:1 derivation produced `xomper-notif-close-game-alert`,
           # a phantom function, so close_game code never deployed. Override
           # the mapping for those cases; default everything else to 1:1.
+          #
+          # The device pair is a different mismatch: the handler dirs are
+          # verb-first (`api_register_device`) but terraform named the
+          # functions noun-first (`xomper-api-device-register`). The 1:1
+          # derivation produced `xomper-api-register-device`, which does not
+          # exist, so the iOS push-registration endpoints have never had code
+          # deployed and have always answered ImportModuleError.
           case "${{ matrix.lambda }}" in
             notif_close_game_alert)
               TARGET_FUNCTIONS="xomper-notif-close-game-sun xomper-notif-close-game-mon" ;;
+            api_register_device)
+              TARGET_FUNCTIONS="xomper-api-device-register" ;;
+            api_unregister_device)
+              TARGET_FUNCTIONS="xomper-api-device-unregister" ;;
             *)
               TARGET_FUNCTIONS="xomper-$(echo '${{ matrix.lambda }}' | tr '_' '-')" ;;
           esac
