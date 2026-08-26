@@ -5,6 +5,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      deploy_all:
+        description: 'Deploy every lambda, not just the ones changed in the last commit'
+        required: false
+        type: boolean
+        default: false
 
 env:
   AWS_REGION: "us-east-1"
@@ -42,6 +48,17 @@ jobs:
 
           # Find changed lambda folders (excluding common) and format as JSON array
           CHANGED_LAMBDAS=$(echo "$CHANGED_FILES" | grep "^lambdas/" | grep -v "^lambdas/common/" | cut -d'/' -f2 | sort -u | grep -v '^$' || true)
+
+          # A lambda that Terraform created but nobody has edited since is
+          # never "changed", so its code is never pushed and it keeps serving
+          # the stub -- answering every request with
+          # `Runtime.ImportModuleError: No module named 'handler'`. That went
+          # unnoticed for as long as the authorizer denied every request
+          # before it reached a handler. This switch is the way back.
+          if [ "${{ inputs.deploy_all }}" = "true" ]; then
+            echo "deploy_all requested — deploying every lambda"
+            CHANGED_LAMBDAS=$(ls -d lambdas/*/ | grep -v "lambdas/common" | xargs -n1 basename)
+          fi
 
           if [ -n "$CHANGED_LAMBDAS" ]; then
             # Convert to JSON array
