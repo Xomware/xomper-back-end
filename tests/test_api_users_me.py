@@ -15,7 +15,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from lambdas.common.constants import PLATFORM_USERS_TABLE
+from lambdas.common.constants import PLATFORM_FOLLOWS_TABLE, PLATFORM_USERS_TABLE
+
+SLEEPER_LEAGUES = [
+    {"league_id": "1317249551823814656", "name": "Charlotte Dynasty League", "season": "2026"},
+    {"league_id": "1389328793713250304", "name": "CLIT Fantasy Football", "season": "2026"},
+]
 
 SLEEPER_PROFILE = {
     "user_id": "594625531702460416",
@@ -36,17 +41,43 @@ def users_table():
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+        # Linking auto-follows the account's leagues, so this table has to
+        # exist for the link path even though this module does not assert on
+        # it beyond the auto-follow cases below.
+        dynamodb.create_table(
+            TableName=PLATFORM_FOLLOWS_TABLE,
+            KeySchema=[
+                {"AttributeName": "userId", "KeyType": "HASH"},
+                {"AttributeName": "leagueId", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "userId", "AttributeType": "S"},
+                {"AttributeName": "leagueId", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "leagueId-index",
+                    "KeySchema": [{"AttributeName": "leagueId", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
         yield dynamodb.Table(PLATFORM_USERS_TABLE)
 
 
 @pytest.fixture
-def mod(users_table):
-    from lambdas.common import platform_users
+def mod(users_table, monkeypatch):
+    from lambdas.common import platform_follows, platform_users
 
+    importlib.reload(platform_follows)
     importlib.reload(platform_users)
     from lambdas.api_users_me import handler as handler_mod
 
-    return importlib.reload(handler_mod)
+    handler_mod = importlib.reload(handler_mod)
+    monkeypatch.setattr(handler_mod, "get_nfl_state", lambda: {"season": "2026"})
+    monkeypatch.setattr(handler_mod, "get_user_leagues", lambda _uid, _s: SLEEPER_LEAGUES)
+    return handler_mod
 
 
 def event(method="GET", path="/me/profile", body=None, sub="cog-1", email="d@x.com"):
@@ -178,3 +209,38 @@ def test_a_method_mismatch_is_rejected(mod):
     )
 
     assert response["statusCode"] == 400
+
+
+def test_linking_auto_follows_the_accounts_leagues(mod, monkeypatch):
+    monkeypatch.setattr(mod, "get_sleeper_user", lambda _: SLEEPER_PROFILE)
+
+    mod.handler(
+        event(method="PUT", path="/me/sleeper-link", body={"sleeperUsername": "dgiordano"}),
+        None,
+    )
+
+    # Without this a freshly linked user lands on an app with no leagues and
+    # no obvious way to add one.
+    assert mod.platform_follows.followed_league_ids("cog-1") == {
+        "1317249551823814656",
+        "1389328793713250304",
+    }
+
+
+def test_a_sleeper_outage_does_not_fail_the_link(mod, monkeypatch):
+    monkeypatch.setattr(mod, "get_sleeper_user", lambda _: SLEEPER_PROFILE)
+
+    def boom(*_args):
+        raise RuntimeError("sleeper down")
+
+    monkeypatch.setattr(mod, "get_user_leagues", boom)
+
+    response = mod.handler(
+        event(method="PUT", path="/me/sleeper-link", body={"sleeperUsername": "dgiordano"}),
+        None,
+    )
+
+    # Linking is the step the user asked for and the one the guard waits on.
+    # Auto-follow is a convenience on top and must not take it down.
+    assert response["statusCode"] == 200
+    assert body_of(response)["user"]["hasLinkedSleeper"] is True

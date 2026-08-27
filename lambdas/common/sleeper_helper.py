@@ -61,6 +61,16 @@ def get_sleeper_user(user_id: str) -> dict[str, Any]:
     return _get(url, "Error getting Sleeper user")
 
 
+def get_user_leagues(user_id: str, season: str) -> list[dict[str, Any]]:
+    """Every NFL league a user is in for a season.
+
+    Sleeper scopes this by season and mints new league ids each year, so a
+    dynasty league appears here under a different id every season.
+    """
+    url = f"{SLEEPER_URL_BASE}/user/{user_id}/leagues/nfl/{season}"
+    return _get(url, "Error getting user leagues") or []
+
+
 def get_sleeper_league(league_id: str) -> dict[str, Any]:
     """Get a Sleeper league by ID."""
     url = f"{SLEEPER_URL_BASE}/league/{league_id}"
