@@ -22,11 +22,11 @@ being stored and failing later during roster matching.
 """
 from typing import Any
 
-from lambdas.common import platform_users
+from lambdas.common import platform_follows, platform_users
 from lambdas.common.caller_identity import get_caller
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.logger import get_logger
-from lambdas.common.sleeper_helper import get_sleeper_user
+from lambdas.common.sleeper_helper import get_nfl_state, get_sleeper_user, get_user_leagues
 from lambdas.common.utility_helpers import parse_body, success_response
 
 HANDLER = "api_users_me"
@@ -94,12 +94,44 @@ def _link(user_id: str, event: dict[str, Any]) -> dict[str, Any]:
     if not profile or not profile.get("user_id"):
         raise ValidationError(f"No Sleeper account found for '{username}'")
 
-    return platform_users.link_sleeper(
+    sleeper_user_id = str(profile["user_id"])
+    record = platform_users.link_sleeper(
         user_id=user_id,
-        sleeper_user_id=str(profile["user_id"]),
+        sleeper_user_id=sleeper_user_id,
         sleeper_username=str(profile.get("username") or username),
         avatar=profile.get("avatar"),
     )
+
+    _auto_follow_leagues(user_id, sleeper_user_id)
+    return record
+
+
+def _auto_follow_leagues(user_id: str, sleeper_user_id: str) -> None:
+    """Follow everything this Sleeper account is already in.
+
+    Without it a freshly linked user has an empty app and no obvious way to
+    fill it. `follow_many` skips leagues already followed, so re-linking
+    never resurrects one the user deliberately unfollowed.
+
+    Best-effort: a Sleeper outage must not fail the link itself, which is the
+    step the user actually asked for and the one the guard is waiting on.
+    """
+    try:
+        season = str((get_nfl_state() or {}).get("season") or "")
+        if not season:
+            return
+        leagues = [
+            {
+                "leagueId": str(l.get("league_id") or ""),
+                "name": l.get("name") or "",
+                "season": str(l.get("season") or ""),
+            }
+            for l in get_user_leagues(sleeper_user_id, season)
+            if l.get("league_id")
+        ]
+        platform_follows.follow_many(user_id, leagues)
+    except Exception as err:
+        log.warning(f"users/me: auto-follow skipped for {user_id} - {err}")
 
 
 @handle_errors(HANDLER)
