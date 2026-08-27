@@ -1,10 +1,10 @@
 """
 Tests for `lambdas.authorizer.handler`.
 
-The authorizer accepts Supabase (ES256) and Cognito (RS256) while the platform
-migrates between them. Tokens here are really signed and really verified — the
-JWKS *fetch* is stubbed, the signature check is not, so a change that weakens
-verification fails these rather than passing on a mock.
+The authorizer verifies Cognito RS256 tokens. Tokens here are really signed
+and really verified — the JWKS *fetch* is stubbed, the signature check is not,
+so a change that weakens verification fails these rather than passing on a
+mock.
 
 The case that matters most is the last one: the shared `xomware-users` pool
 issues tokens for every Xomware app, so a valid Cognito token is not by itself
@@ -34,13 +34,12 @@ OTHER_RSA_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 @pytest.fixture
 def authorizer(monkeypatch):
-    """Load the authorizer with both providers configured.
+    """Load the authorizer with Cognito configured.
 
-    Each provider's PyJWKClient is replaced with a stub that returns a fixed
-    key, standing in for the JWKS endpoint. Everything downstream of the key
-    lookup — signature, expiry, issuer, client — runs for real.
+    The PyJWKClient is replaced with a stub that returns a fixed key, standing
+    in for the JWKS endpoint. Everything downstream of the key lookup —
+    signature, expiry, issuer, client — runs for real.
     """
-    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     monkeypatch.setenv("COGNITO_USER_POOL_ID", POOL_ID)
     monkeypatch.setenv("COGNITO_CLIENT_ID", CLIENT_ID)
     monkeypatch.setenv("AWS_REGION", REGION)
@@ -57,7 +56,6 @@ def authorizer(monkeypatch):
             return self
 
     monkeypatch.setattr(mod, "_cognito_jwks", Stub(RSA_KEY.public_key()))
-    monkeypatch.setattr(mod, "_supabase_jwks", Stub(EC_KEY.public_key()))
     return mod
 
 
@@ -101,17 +99,17 @@ def test_allows_a_cognito_token(authorizer):
     assert policy["context"]["sub"] == "cog-user-1"
 
 
-def test_allows_a_supabase_token(authorizer):
-    # Both providers stay live through the migration so a user holding a
-    # Supabase session is not signed out mid-deploy.
+def test_denies_a_supabase_token(authorizer):
+    # The dual-provider window is closed. A Supabase token is now just a
+    # token signed by a key this pool does not publish. xomper-ios still
+    # sends one (Xomware/xomper-ios#1) and gets a 403 until it migrates.
     policy = authorizer.handler(
         {"authorizationToken": f"Bearer {supabase_token()}",
          "methodArn": METHOD_ARN},
         None,
     )
 
-    assert effect(policy) == "Allow"
-    assert policy["context"]["provider"] == "supabase"
+    assert effect(policy) == "Deny"
 
 
 def test_passes_cognito_groups_through_for_admin_checks(authorizer):
