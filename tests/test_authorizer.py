@@ -102,7 +102,7 @@ def test_allows_a_cognito_token(authorizer):
 def test_denies_a_supabase_token(authorizer):
     # The dual-provider window is closed. A Supabase token is now just a
     # token signed by a key this pool does not publish. xomper-ios still
-    # sends one (Xomware/xomper-ios#1) and gets a 403 until it migrates.
+    # sends one (Xomware/xomper-ios#166) and gets a 403 until it migrates.
     policy = authorizer.handler(
         {"authorizationToken": f"Bearer {supabase_token()}",
          "methodArn": METHOD_ARN},
