@@ -1,26 +1,25 @@
 """
 Lambda Authorizer
 =================
-API Gateway authorizer for Xomper. Accepts either identity provider while the
-platform migrates from Supabase to Cognito.
-
-Supabase issues ES256 tokens signed with a project-scoped key pair, published
-at `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`.
-
-Cognito issues RS256 tokens for the shared `xomware-users` pool, published at
+API Gateway authorizer for Xomper. Verifies Cognito RS256 tokens issued by
+the shared `xomware-users` pool, published at
 `https://cognito-idp.{region}.amazonaws.com/{poolId}/.well-known/jwks.json`.
 
-Accepting both is deliberate. A single-provider authorizer forces a flag day:
-the frontend and the API have to switch in the same deploy, and any user
-holding a session from the old provider is signed out mid-migration. Verifying
-both means the frontend can move whenever it is ready, and this narrows back
-to Cognito alone once nothing issues Supabase tokens.
+The pool is estate-wide: xomware.com, xomforms and xomtracks all sign into
+it, so their tokens carry the same issuer and are signed by the same keys.
+**The app client id is the only thing scoping a token to Xomper**, which is
+what the client check below is for.
 
-Both clients cache their keys at module load, so verification on each
+This accepted Supabase ES256 tokens alongside Cognito during the migration,
+so the frontend could move without a flag day. The frontend has moved and no
+longer ships a Supabase client at all, so that path is gone. Note this means
+any caller still presenting a Supabase token now gets a 403.
+
+The JWKS client caches its keys at module load, so verification on each
 invocation is a local signature check.
 
-Claims are returned to the caller as `principalId` and in the authorizer
-context, so downstream handlers can identify the user without re-decoding.
+Claims are returned as `principalId` and in the authorizer context, so
+downstream handlers can identify the user without re-decoding.
 """
 
 from __future__ import annotations
@@ -38,14 +37,6 @@ log = get_logger(__file__)
 HANDLER = 'authorizer'
 
 # Module-level so PyJWKClient's internal key cache survives warm invocations.
-_SUPABASE_URL = (os.environ.get('SUPABASE_URL') or '').rstrip('/')
-_SUPABASE_JWKS = (
-    f"{_SUPABASE_URL}/auth/v1/.well-known/jwks.json" if _SUPABASE_URL else ''
-)
-_supabase_jwks: PyJWKClient | None = (
-    PyJWKClient(_SUPABASE_JWKS, cache_keys=True) if _SUPABASE_JWKS else None
-)
-
 _COGNITO_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID') or ''
 _COGNITO_CLIENT_ID = os.environ.get('COGNITO_CLIENT_ID') or ''
 _AWS_REGION = os.environ.get('AWS_REGION') or 'us-east-1'
@@ -90,28 +81,6 @@ def generate_policy(effect: str, resource: str, claims: dict | None = None) -> d
     return policy
 
 
-def _try_supabase(token: str) -> dict | None:
-    if _supabase_jwks is None:
-        return None
-    try:
-        signing_key = _supabase_jwks.get_signing_key_from_jwt(token)
-        claims = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=['ES256'],
-            audience='authenticated',
-        )
-        claims['_provider'] = 'supabase'
-        return claims
-    except jwt.ExpiredSignatureError:
-        log.warning("Authorizer: supabase token expired")
-        return None
-    except Exception:
-        # Wrong issuer is the common case now that two providers are live, and
-        # it is not worth a warning on every Cognito request.
-        return None
-
-
 def _try_cognito(token: str) -> dict | None:
     if _cognito_jwks is None:
         return None
@@ -150,14 +119,14 @@ def _try_cognito(token: str) -> dict | None:
 
 
 def decode_auth_token(auth_token: str) -> dict | None:
-    """Verify against either provider. Returns claims or None."""
+    """Verify a Cognito token. Returns claims or None."""
     token = auth_token.replace('Bearer ', '').strip()
     if not token:
         return None
 
-    claims = _try_cognito(token) or _try_supabase(token)
+    claims = _try_cognito(token)
     if claims is None:
-        log.warning("Authorizer: token matched neither provider")
+        log.warning("Authorizer: token failed Cognito verification")
     return claims
 
 
