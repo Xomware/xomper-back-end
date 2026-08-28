@@ -88,6 +88,44 @@ def resolve_sleeper_settings(league_id: str) -> dict[str, Any] | None:
     }
 
 
+# Everything the value engine needs when the caller is not a Sleeper league.
+REQUIRED_SETTINGS = ("scoring", "rosterPositions", "numTeams", "season")
+
+
+def explicit_settings(body: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """Settings handed over directly instead of read from a Sleeper league.
+
+    Returns (settings, error). This is how an ESPN league reaches the same
+    engine: its scoring is translated to Sleeper stat keys upstream, so by the
+    time it arrives here nothing platform-specific is left.
+    """
+    missing = [k for k in REQUIRED_SETTINGS if body.get(k) is None]
+    if missing:
+        return None, f"missing required field(s): {', '.join(missing)}"
+
+    scoring = body["scoring"]
+    roster_positions = body["rosterPositions"]
+    if not isinstance(scoring, dict):
+        return None, "scoring must be an object"
+    if not isinstance(roster_positions, list):
+        return None, "rosterPositions must be an array"
+    try:
+        num_teams = int(body["numTeams"])
+    except (TypeError, ValueError):
+        return None, "numTeams must be a number"
+    if num_teams < 1:
+        return None, "numTeams must be at least 1"
+
+    return {
+        "scoring": scoring,
+        "rosterPositions": roster_positions,
+        "numTeams": num_teams,
+        # Derived the same way as the Sleeper path, so the two cannot drift.
+        "ppr": scoring.get("rec", 0) or 0,
+        "season": str(body["season"]),
+    }, None
+
+
 def compute_values(settings: dict[str, Any]) -> dict[str, Any]:
     """Values for a resolved settings blob. Knows nothing about any platform."""
     con = _connect()
@@ -103,19 +141,27 @@ def compute_values(settings: dict[str, Any]) -> dict[str, Any]:
 
 @handle_errors(HANDLER)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    body = parse_body(event)
-    league_id = (body or {}).get("leagueId")
-    if not league_id:
-        return success_response({"error": "leagueId is required"}, status_code=400)
+    body = parse_body(event) or {}
+    league_id = body.get("leagueId")
 
-    settings = resolve_sleeper_settings(league_id)
-    if settings is None:
-        return success_response({"error": "league not found"}, status_code=404)
-    if not settings["season"]:
-        return success_response({"error": "could not determine season"}, status_code=500)
+    if league_id:
+        settings = resolve_sleeper_settings(league_id)
+        if settings is None:
+            return success_response({"error": "league not found"}, status_code=404)
+        if not settings["season"]:
+            return success_response({"error": "could not determine season"}, status_code=500)
+    elif any(body.get(k) is not None for k in REQUIRED_SETTINGS):
+        settings, error = explicit_settings(body)
+        if error:
+            return success_response({"error": error}, status_code=400)
+    else:
+        return success_response(
+            {"error": "leagueId or explicit league settings are required"},
+            status_code=400,
+        )
 
     log.info(
-        f"Valuing league {league_id} ({settings['season']}), "
+        f"Valuing {league_id or 'explicit settings'} ({settings['season']}), "
         f"{settings['numTeams']} teams"
     )
 
