@@ -96,6 +96,16 @@ PLAYER_FIELDS = (
     "espn_id",
     "yahoo_id",
     "search_rank",
+    # Added after a field-by-field diff of the Angular source against this
+    # list found these read in the UI but never stored. The Sleeper fallback
+    # in PlayerService only fires on a network error, so a missing field is
+    # not a failure it can detect -- it just serves blanks.
+    "fantasy_positions",
+    "height",
+    "weight",
+    "college",
+    "depth_chart_order",
+    "search_full_name",
 )
 
 
@@ -201,7 +211,13 @@ def _refresh_players() -> int:
                 value = player.get(field)
                 if value is None or value == "":
                     continue
-                item[field] = str(value) if not isinstance(value, (int, float)) else value
+                if isinstance(value, list):
+                    # fantasy_positions. str() would store "['WR', 'FLEX']".
+                    item[field] = [str(v) for v in value]
+                elif isinstance(value, (int, float)):
+                    item[field] = value
+                else:
+                    item[field] = str(value)
             batch.put_item(Item=item)
             written += 1
 

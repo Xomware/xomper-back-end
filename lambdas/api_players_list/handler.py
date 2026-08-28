@@ -75,6 +75,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             for key, value in item.items()
             if key != "playerId"
         }
+        # Sleeper's own /players/nfl carries player_id inside each value, and
+        # consumers build PlayerModel from the value alone -- `new
+        # PlayerModel(map[id])`. Dropping it because it is also the map key
+        # left player_id undefined across eleven files: every headshot URL
+        # resolved to .../undefined.jpg, and any id-keyed lookup off a model
+        # silently missed.
+        record["player_id"] = str(player_id)
         players[str(player_id)] = record
 
     log.info(f"players: returning {len(players)} from {PLAYERS_TABLE_NAME}")
