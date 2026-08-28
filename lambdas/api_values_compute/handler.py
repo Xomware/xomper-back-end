@@ -65,6 +65,42 @@ def _connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
+def resolve_sleeper_settings(league_id: str) -> dict[str, Any] | None:
+    """The value engine's inputs, read off a Sleeper league. None if unknown.
+
+    Split out from the handler because `warehouse_values` never needed Sleeper —
+    only this resolution step does. A second resolver can feed the same shape
+    from somewhere else without touching the computation.
+    """
+    league = get_sleeper_league(league_id)
+    if not league:
+        return None
+
+    scoring = league.get("scoring_settings") or {}
+    return {
+        "scoring": scoring,
+        "rosterPositions": league.get("roster_positions") or [],
+        "numTeams": league.get("total_rosters") or 12,
+        "ppr": scoring.get("rec", 0) or 0,
+        # A league object carries the season it belongs to, which is what its
+        # projections should be read from — not necessarily the current one.
+        "season": str(league.get("season") or get_nfl_state().get("season") or ""),
+    }
+
+
+def compute_values(settings: dict[str, Any]) -> dict[str, Any]:
+    """Values for a resolved settings blob. Knows nothing about any platform."""
+    con = _connect()
+    scored = score_players(
+        con, _parquet_uri(settings["season"]), settings["scoring"], settings["ppr"]
+    )
+    starters = starters_by_position(
+        settings["rosterPositions"], settings["numTeams"], scored
+    )
+    values = values_for(con, starters)
+    return {"starters": starters, "count": len(values), "values": values}
+
+
 @handle_errors(HANDLER)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     body = parse_body(event)
@@ -72,36 +108,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if not league_id:
         return success_response({"error": "leagueId is required"}, status_code=400)
 
-    league = get_sleeper_league(league_id)
-    if not league:
+    settings = resolve_sleeper_settings(league_id)
+    if settings is None:
         return success_response({"error": "league not found"}, status_code=404)
-
-    scoring = league.get("scoring_settings") or {}
-    roster_positions = league.get("roster_positions") or []
-    num_teams = league.get("total_rosters") or 12
-    ppr = scoring.get("rec", 0) or 0
-
-    # Season from the league, falling back to NFL state. A league object
-    # carries the season it belongs to, which is what its projections should
-    # be read from — not necessarily the current one.
-    season = str(league.get("season") or get_nfl_state().get("season") or "")
-    if not season:
+    if not settings["season"]:
         return success_response({"error": "could not determine season"}, status_code=500)
 
-    log.info(f"Valuing league {league_id} ({season}), {num_teams} teams")
+    log.info(
+        f"Valuing league {league_id} ({settings['season']}), "
+        f"{settings['numTeams']} teams"
+    )
 
-    con = _connect()
-    scored = score_players(con, _parquet_uri(season), scoring, ppr)
-    starters = starters_by_position(roster_positions, num_teams, scored)
-    values = values_for(con, starters)
+    computed = compute_values(settings)
 
     return success_response({
         "leagueId": league_id,
-        "season": season,
-        "numTeams": num_teams,
+        "season": settings["season"],
+        "numTeams": settings["numTeams"],
         # Returned so a client can show what the values were built from rather
         # than presenting them as absolute truth.
-        "starters": starters,
-        "count": len(values),
-        "values": values,
+        "starters": computed["starters"],
+        "count": computed["count"],
+        "values": computed["values"],
     })
