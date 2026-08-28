@@ -9,6 +9,9 @@ on:
         type: string
 
 
+env:
+  AWS_REGION: us-east-1
+
 jobs:
   get-layer-arn:
     permissions:
