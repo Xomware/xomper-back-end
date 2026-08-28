@@ -100,6 +100,10 @@ PLAYER_FIELDS = (
     # list found these read in the UI but never stored. The Sleeper fallback
     # in PlayerService only fires on a network error, so a missing field is
     # not a failure it can detect -- it just serves blanks.
+    # Templates bind player.full_name directly rather than going through
+    # PlayerModel.getFullName(), so omitting it renders a roster row as
+    # "PIT * QB * 16" with no name at all.
+    "full_name",
     "fantasy_positions",
     "height",
     "weight",
