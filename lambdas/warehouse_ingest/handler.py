@@ -42,6 +42,12 @@ from lambdas.common.constants import (
     WAREHOUSE_BUCKET_NAME,
 )
 from lambdas.common.errors import handle_errors
+from lambdas.common.espn_crosswalk import (
+    COVERAGE_FLOOR,
+    build_crosswalk,
+    fetch_espn_players,
+    fetch_fantasycalc,
+)
 from lambdas.common.logger import get_logger
 from lambdas.common.sleeper_helper import fetch_nfl_players, get_nfl_state
 from lambdas.common.utility_helpers import success_response
@@ -195,9 +201,36 @@ def _ingest_projections(con: duckdb.DuckDBPyConnection, season: str) -> int:
     return rows
 
 
-def _refresh_players() -> int:
+def _espn_ids_by_sleeper_id(season: str, players: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Invert the ESPN crosswalk so it can be written onto Sleeper player rows.
+
+    Raises rather than publishing a half-mapped table: a silent drop here would
+    surface much later as an ESPN league whose board is missing players, with
+    nothing pointing back at this job.
+    """
+    result = build_crosswalk(players, fetch_espn_players(season), fetch_fantasycalc())
+
+    if result["misses"]:
+        log.info(f"espn crosswalk unresolved: {result['misses'][:20]}")
+    log.info(
+        f"espn crosswalk: {result['coverage']:.4f} coverage, sources {result['sources']}"
+    )
+    if result["coverage"] < COVERAGE_FLOOR:
+        raise RuntimeError(
+            f"ESPN crosswalk coverage {result['coverage']:.4f} below floor "
+            f"{COVERAGE_FLOOR}; {len(result['misses'])} players unresolved"
+        )
+
+    inverted: dict[str, dict[str, str]] = {}
+    for espn_id, entry in result["mapping"].items():
+        inverted[entry["sleeperId"]] = {"espn_id": espn_id, "source": entry["source"]}
+    return inverted
+
+
+def _refresh_players(
+    players: dict[str, Any], espn_by_sleeper: dict[str, dict[str, str]]
+) -> int:
     """Slim the /players/nfl dump into DynamoDB for the frontend."""
-    players = fetch_nfl_players()
     table = boto3.resource("dynamodb").Table(PLAYERS_TABLE_NAME)
 
     written = 0
@@ -222,6 +255,14 @@ def _refresh_players() -> int:
                     item[field] = value
                 else:
                     item[field] = str(value)
+            # Sleeper's own espn_id covers 42% of ESPN's list. The crosswalk
+            # fills the rest, and the source is stored so a consumer can tell a
+            # published id from a name match.
+            resolved = espn_by_sleeper.get(str(player_id))
+            if resolved:
+                item["espn_id"] = resolved["espn_id"]
+                item["espn_id_source"] = resolved["source"]
+
             batch.put_item(Item=item)
             written += 1
 
@@ -242,7 +283,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     con = _connect()
     stat_rows = _ingest_projections(con, season)
-    players_written = _refresh_players()
+    # Fetched once and shared: the dump is 14.6 MB and both steps need it.
+    players = fetch_nfl_players()
+    espn_by_sleeper = _espn_ids_by_sleeper_id(season, players)
+    players_written = _refresh_players(players, espn_by_sleeper)
 
     log.info("Warehouse ingest complete.")
     return success_response(
@@ -250,6 +294,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "season": season,
             "statRows": stat_rows,
             "playersWritten": players_written,
+            "espnCrosswalkSize": len(espn_by_sleeper),
         },
         is_api=False,
     )
