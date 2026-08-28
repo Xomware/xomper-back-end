@@ -8,20 +8,24 @@ on:
         required: false
         type: string
 
-env:
-  AWS_REGION: "us-east-1"
 
 jobs:
   get-layer-arn:
+    permissions:
+      id-token: write # mint the OIDC token traded for the deploy role
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       layer_arn: ${{ steps.get-arn.outputs.layer_arn }}
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
       - name: Get layer ARN
         id: get-arn
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           if [ -n "${{ inputs.layer_arn }}" ]; then
             echo "Using provided layer ARN: ${{ inputs.layer_arn }}"
@@ -55,6 +59,9 @@ jobs:
           echo "Found lambdas: $ALL_LAMBDAS"
 
   update-all-lambdas:
+    permissions:
+      id-token: write # mint the OIDC token traded for the deploy role
+      contents: read
     needs: [get-layer-arn, get-all-lambdas]
     runs-on: ubuntu-latest
     strategy:
@@ -63,10 +70,13 @@ jobs:
       fail-fast: false
       max-parallel: 5
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
       - name: Update lambda layer
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           FUNCTION_NAME="xomper-${{ matrix.lambda }}"
           # Convert underscores to hyphens for AWS function names
