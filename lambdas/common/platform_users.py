@@ -169,23 +169,23 @@ def unlink_sleeper(user_id: str) -> dict[str, Any]:
     return response.get("Attributes", {})
 
 
-def find_by_sleeper_ids(sleeper_user_ids: set[str]) -> dict[str, dict[str, Any]]:
-    """Map Sleeper user id -> the Xomper account that claimed it.
+def find_by_sleeper_ids(sleeper_user_ids: set[str]) -> dict[str, list[dict[str, Any]]]:
+    """Map Sleeper user id -> every Xomper account that claimed it.
 
     A scan, not a query: nothing indexes sleeperUserId, and adding a GSI for
     a table this size would cost more than it saves. Revisit if the estate
     grows past a few hundred users -- the caller here is a suggestion list,
     so a slow path degrades a nicety rather than a login.
 
-    A handle can be claimed more than once (claims are unverified by design).
-    Last writer wins here, which is fine for suggestions: the point is to
-    surface someone to befriend, and the friendship itself is keyed on the
-    Cognito id that the request targets.
+    Returns a list per handle, not a single record. Claims are unverified by
+    design, so a handle can be claimed more than once, and collapsing that to
+    one winner is not safe: callers that act on the result would target an
+    arbitrary account. Let them see the ambiguity and decide.
     """
     if not sleeper_user_ids:
         return {}
 
-    found: dict[str, dict[str, Any]] = {}
+    found: dict[str, list[dict[str, Any]]] = {}
     kwargs: dict[str, Any] = {
         "ProjectionExpression": "userId, displayName, sleeperUserId, sleeperUsername, sleeperAvatar",
     }
@@ -195,7 +195,7 @@ def find_by_sleeper_ids(sleeper_user_ids: set[str]) -> dict[str, dict[str, Any]]
             for item in response.get("Items", []):
                 claimed = str(item.get("sleeperUserId") or "")
                 if claimed in sleeper_user_ids:
-                    found[claimed] = item
+                    found.setdefault(claimed, []).append(item)
             token = response.get("LastEvaluatedKey")
             if not token:
                 return found
