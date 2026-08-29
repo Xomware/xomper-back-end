@@ -16,12 +16,11 @@ pytest
 
 ## Project Config
 ```yaml
-pm_tool: github-projects
-github_project_number: 2
+pm_tool: none
 github_project_owner: Xomware
 base_branch: master
 test_commands:
-  - echo "no tests configured"
+  - pytest tests/
 ```
 
 ## Constraints
