@@ -113,3 +113,7 @@ PLATFORM_USERS_TABLE = os.environ.get("PLATFORM_USERS_TABLE", "xomper-users")
 # Followed leagues (Phase 4.8). The inversion of whitelisted_leagues, and the
 # cost control: scheduled work iterates followed leagues only.
 PLATFORM_FOLLOWS_TABLE = os.environ.get("PLATFORM_FOLLOWS_TABLE", "xomper-follows")
+
+# Social graph. Keyed on the Cognito sub -- Sleeper handles are unverified, so
+# a graph built on them would let anyone befriend as someone else.
+SOCIAL_TABLE = os.environ.get("SOCIAL_TABLE", "xomper-social")
