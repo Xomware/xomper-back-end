@@ -93,6 +93,29 @@ def ensure_user(user_id: str, email: str | None) -> dict[str, Any]:
     return record
 
 
+def set_display_name(user_id: str, display_name: str) -> dict[str, Any]:
+    """Set the name this user goes by in Xomper.
+
+    Xomper owns this rather than borrowing the Sleeper handle. The handle is
+    unverified -- anyone can claim any of them -- so presenting it as identity
+    means the app asserts something it never checked. A name attached to a
+    confirmed account is a claim we can actually stand behind.
+    """
+    try:
+        response = _table().update_item(
+            Key={"userId": user_id},
+            UpdateExpression="SET displayName = :n, updatedAt = :t",
+            ExpressionAttributeValues={
+                ":n": display_name,
+                ":t": get_iso_timestamp(),
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as err:
+        raise DynamoDBError(f"set_display_name failed: {err}") from err
+    return response.get("Attributes", {})
+
+
 def link_sleeper(
     user_id: str,
     sleeper_user_id: str,
@@ -104,12 +127,15 @@ def link_sleeper(
     The caller is responsible for having resolved the username against
     Sleeper first — this writes what it is given.
     """
+    # if_not_exists on displayName: seed it from the Sleeper handle so a new
+    # user is never nameless, but never overwrite a name they chose.
     try:
         response = _table().update_item(
             Key={"userId": user_id},
             UpdateExpression=(
                 "SET sleeperUserId = :sid, sleeperUsername = :name, "
-                "sleeperAvatar = :av, updatedAt = :t"
+                "sleeperAvatar = :av, updatedAt = :t, "
+                "displayName = if_not_exists(displayName, :name)"
             ),
             ExpressionAttributeValues={
                 ":sid": sleeper_user_id,
