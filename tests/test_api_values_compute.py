@@ -105,6 +105,57 @@ class TestComputeValues:
         assert out["count"] == 2
 
 
+class TestExplicitSettings:
+    BODY = {
+        "scoring": {"rec": 0.5, "pass_td": 4.0},
+        "rosterPositions": ["QB", "RB", "WR", "TE"],
+        "numTeams": 10,
+        "season": "2025",
+    }
+
+    def test_maps_a_body_onto_engine_inputs(self, mod):
+        settings, error = mod.explicit_settings(self.BODY)
+        assert error is None
+        assert settings == {
+            "scoring": {"rec": 0.5, "pass_td": 4.0},
+            "rosterPositions": ["QB", "RB", "WR", "TE"],
+            "numTeams": 10,
+            "ppr": 0.5,
+            "season": "2025",
+        }
+
+    def test_derives_ppr_the_same_way_the_sleeper_path_does(self, mod):
+        explicit, _ = mod.explicit_settings({**self.BODY, "scoring": {"rec": 1.0}})
+        sleeper = mod.resolve_sleeper_settings("123")
+        assert explicit["ppr"] == sleeper["ppr"] == 1.0
+
+    def test_ppr_is_zero_for_standard_scoring(self, mod):
+        settings, _ = mod.explicit_settings({**self.BODY, "scoring": {"pass_td": 4.0}})
+        assert settings["ppr"] == 0
+
+    def test_names_every_missing_field(self, mod):
+        settings, error = mod.explicit_settings({"scoring": {}})
+        assert settings is None
+        for field in ("rosterPositions", "numTeams", "season"):
+            assert field in error
+
+    def test_rejects_wrong_types(self, mod):
+        for bad, expected in [
+            ({"scoring": []}, "scoring must be an object"),
+            ({"rosterPositions": "QB,RB"}, "rosterPositions must be an array"),
+            ({"numTeams": "many"}, "numTeams must be a number"),
+            ({"numTeams": 0}, "numTeams must be at least 1"),
+        ]:
+            settings, error = mod.explicit_settings({**self.BODY, **bad})
+            assert settings is None
+            assert error == expected
+
+    def test_accepts_a_numeric_string_for_num_teams(self, mod):
+        settings, error = mod.explicit_settings({**self.BODY, "numTeams": "12"})
+        assert error is None
+        assert settings["numTeams"] == 12
+
+
 class TestHandlerContract:
     def test_response_body_is_unchanged(self, mod):
         res = _call(mod, {"leagueId": "123"})
@@ -118,10 +169,33 @@ class TestHandlerContract:
             "values": VALUES,
         }
 
-    def test_missing_league_id_is_400(self, mod):
+    def test_empty_body_is_400_naming_both_options(self, mod):
         res = _call(mod, {})
         assert res["statusCode"] == 400
-        assert "leagueId" in json.loads(res["body"])["error"]
+        error = json.loads(res["body"])["error"]
+        assert "leagueId" in error and "settings" in error
+
+    def test_explicit_settings_value_without_a_league_id(self, mod):
+        res = _call(mod, TestExplicitSettings.BODY)
+        assert res["statusCode"] == 200
+        body = json.loads(res["body"])
+        assert body["leagueId"] is None
+        assert body["season"] == "2025"
+        assert body["numTeams"] == 10
+        assert body["values"] == VALUES
+
+    def test_league_id_still_wins_when_both_are_sent(self, mod):
+        res = _call(mod, {"leagueId": "123", **TestExplicitSettings.BODY})
+        body = json.loads(res["body"])
+        # Sleeper's own settings, not the ones pasted alongside them.
+        assert body["leagueId"] == "123"
+        assert body["numTeams"] == 12
+        assert body["season"] == "2025"
+
+    def test_partial_explicit_settings_is_400_not_500(self, mod):
+        res = _call(mod, {"scoring": {"rec": 1.0}})
+        assert res["statusCode"] == 400
+        assert "missing required field" in json.loads(res["body"])["error"]
 
     def test_unknown_league_is_404(self, mod):
         res = _call(mod, {"leagueId": "nope"})
