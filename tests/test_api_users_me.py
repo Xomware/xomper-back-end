@@ -316,3 +316,48 @@ def test_display_name_is_trimmed(mod):
     )
 
     assert body_of(response)["user"]["displayName"] == "Dom"
+
+
+# Codepoints that pass an `ord(c) < 32` floor but must not reach a display
+# name. It renders in every surface that mentions the user, so a character
+# that changes how the rest of the string draws is a spoofing tool, not a
+# formatting quirk. U+202E reverses everything after it; U+200B lets two
+# accounts hold names that look identical.
+UNICODE_ATTACKS = [
+    ("right-to-left override", "Alice\u202eBob"),
+    ("zero-width space", "Ali\u200bce"),
+    ("delete", "Ali\u007fce"),
+    ("next line", "Ali\u0085ce"),
+    ("left-to-right mark", "Ali\u200ece"),
+    ("first strong isolate", "Ali\u2066ce"),
+    ("private use", "Ali\ue000ce"),
+]
+
+
+@pytest.mark.parametrize("label,name", UNICODE_ATTACKS, ids=[a[0] for a in UNICODE_ATTACKS])
+def test_display_name_rejects_non_c0_control_characters(mod, label, name):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": name}),
+        None,
+    )
+
+    assert response["statusCode"] == 400, label
+
+
+@pytest.mark.parametrize("label,name", UNICODE_ATTACKS, ids=[a[0] for a in UNICODE_ATTACKS])
+def test_the_old_ord_floor_would_have_let_these_through(label, name):
+    # The gap this fix closes. If this ever fails, the old check was already
+    # sufficient and the widened one is unnecessary.
+    assert not any(ord(c) < 32 for c in name), label
+
+
+@pytest.mark.parametrize(
+    "name", ["Dominick", "Ren\u00e9e", "O'Neill-Smith", "\u5c71\u7530", "Ali \u00c7elik"]
+)
+def test_display_name_still_accepts_ordinary_names(mod, name):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": name}),
+        None,
+    )
+
+    assert response["statusCode"] == 200, name
