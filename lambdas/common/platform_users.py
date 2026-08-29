@@ -127,15 +127,27 @@ def link_sleeper(
     The caller is responsible for having resolved the username against
     Sleeper first — this writes what it is given.
     """
-    # if_not_exists on displayName: seed it from the Sleeper handle so a new
-    # user is never nameless, but never overwrite a name they chose.
+    # Seed displayName from the handle so a new user is never nameless, and
+    # re-seed it when it still matches the handle being replaced -- that value
+    # was ours, not theirs. A name the user actually chose is left alone.
+    #
+    # Without the re-seed, relinking left the old handle as the display name:
+    # an account showing "domgiordano" while linked to reesegriffin, next to
+    # the real domgiordano, both rendering identically in the friends list.
+    current = get_user(user_id) or {}
+    was_seeded = current.get("displayName") in (
+        None,
+        "",
+        current.get("sleeperUsername"),
+    )
+    set_display = ":name" if was_seeded else "if_not_exists(displayName, :name)"
     try:
         response = _table().update_item(
             Key={"userId": user_id},
             UpdateExpression=(
                 "SET sleeperUserId = :sid, sleeperUsername = :name, "
                 "sleeperAvatar = :av, updatedAt = :t, "
-                "displayName = if_not_exists(displayName, :name)"
+                f"displayName = {set_display}"
             ),
             ExpressionAttributeValues={
                 ":sid": sleeper_user_id,
