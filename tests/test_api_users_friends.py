@@ -321,3 +321,57 @@ def test_a_caller_with_no_linked_handle_gets_nothing(mod, monkeypatch, tables):
     )
 
     assert payload["suggestions"] == []
+
+
+def test_a_handle_claimed_twice_is_not_suggested(mod, monkeypatch, tables):
+    """The failure this prevents was observed live.
+
+    Three accounts claimed one Sleeper handle. The suggestion collapsed them
+    to whichever the scan saw last, and a friend request meant for the person
+    on screen landed on an unrelated third account.
+    """
+    _link_a(tables)
+    users = tables.Table(PLATFORM_USERS_TABLE)
+    users.update_item(
+        Key={"userId": B},
+        UpdateExpression="SET sleeperUserId = :s",
+        ExpressionAttributeValues={":s": "s-b"},
+    )
+    users.put_item(
+        Item={
+            "userId": "cog-impostor",
+            "displayName": "Bee",
+            "sleeperUsername": "beehandle",
+            "sleeperUserId": "s-b",
+        }
+    )
+    _sleeper(monkeypatch, mod, [{"league_id": "L1"}], [{"user_id": "s-b"}])
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    # Both claimants render identically, so there is nothing to choose
+    # between -- offering either one is a coin flip on someone's behalf.
+    assert payload["suggestions"] == []
+
+
+def test_one_ambiguous_handle_does_not_hide_the_others(mod, monkeypatch, tables):
+    _link_a(tables)
+    users = tables.Table(PLATFORM_USERS_TABLE)
+    users.update_item(
+        Key={"userId": B},
+        UpdateExpression="SET sleeperUserId = :s",
+        ExpressionAttributeValues={":s": "s-b"},
+    )
+    users.put_item(Item={"userId": "cog-dupe-1", "displayName": "Cee", "sleeperUserId": "s-c"})
+    users.put_item(Item={"userId": "cog-dupe-2", "displayName": "Cee", "sleeperUserId": "s-c"})
+    _sleeper(
+        monkeypatch, mod, [{"league_id": "L1"}], [{"user_id": "s-b"}, {"user_id": "s-c"}]
+    )
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    assert [p["userId"] for p in payload["suggestions"]] == [B]

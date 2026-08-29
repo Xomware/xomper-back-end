@@ -114,9 +114,24 @@ def _suggestions(caller_id: str, known: set[str]) -> list[dict[str, Any]]:
             if member_id and member_id != sleeper_id:
                 leaguemates.setdefault(member_id, member)
 
-    claimed = platform_users.find_by_sleeper_ids(set(leaguemates))
-    return sorted(
-        (
+    people = []
+    for sleeper_id, claimants in platform_users.find_by_sleeper_ids(set(leaguemates)).items():
+        # A handle claimed by more than one account is not offered at all.
+        # Every claimant renders identically -- same handle, same avatar, and
+        # displayName is seeded from the handle -- so there is nothing for the
+        # user to choose between, and picking one silently sends the request
+        # to someone they did not mean. Observed live: three accounts claimed
+        # one handle and the request landed on a third party.
+        if len(claimants) > 1:
+            log.warning(
+                f"suggestions: skipping {sleeper_id}, claimed by {len(claimants)} accounts"
+            )
+            continue
+
+        record = claimants[0]
+        if str(record.get("userId") or "") in known:
+            continue
+        people.append(
             {
                 "userId": str(record["userId"]),
                 "displayName": str(
@@ -126,11 +141,9 @@ def _suggestions(caller_id: str, known: set[str]) -> list[dict[str, Any]]:
                 "sleeperAvatar": str(record.get("sleeperAvatar") or ""),
                 "since": "",
             }
-            for record in claimed.values()
-            if str(record.get("userId") or "") not in known
-        ),
-        key=lambda person: person["displayName"].lower(),
-    )
+        )
+
+    return sorted(people, key=lambda person: person["displayName"].lower())
 
 
 def _hydrate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
