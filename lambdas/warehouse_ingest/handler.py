@@ -32,6 +32,8 @@ Idempotency: the nightly write is a full replace of `projections/current`,
 plus a dated snapshot. Re-invoking on the same day overwrites both with
 identical content.
 """
+import json
+from datetime import datetime, timezone
 from typing import Any
 
 import boto3
@@ -42,6 +44,7 @@ from lambdas.common.constants import (
     WAREHOUSE_BUCKET_NAME,
 )
 from lambdas.common.errors import handle_errors
+from lambdas.common.ffc_adp import fetch_all as fetch_adp
 from lambdas.common.espn_crosswalk import (
     COVERAGE_FLOOR,
     build_crosswalk,
@@ -227,6 +230,37 @@ def _espn_ids_by_sleeper_id(season: str, players: dict[str, Any]) -> dict[str, d
     return inverted
 
 
+def _write_adp(season: str) -> dict[str, Any]:
+    """Snapshot FFC ADP beside the projections, current plus a dated copy.
+
+    JSON rather than Parquet: it is a few thousand small rows served straight
+    to the draft board, so the API can read it without DuckDB.
+    """
+    snapshot = fetch_adp(season)
+    snapshot["capturedAt"] = datetime.now(timezone.utc).isoformat()
+
+    body = json.dumps(snapshot).encode()
+    today = snapshot["capturedAt"][:10]
+    s3 = boto3.client("s3")
+    for key in ("adp/current/adp.json", f"adp/snapshots/dt={today}/adp.json"):
+        s3.put_object(
+            Bucket=WAREHOUSE_BUCKET_NAME,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+        )
+
+    if snapshot["failed"]:
+        # Recorded, not raised: one dead format should not cost the night's
+        # projections, but a silently stale format would be worse.
+        log.warning(f"adp: formats failed {snapshot['failed']}")
+    log.info(
+        f"adp: {len(snapshot['formats'])} formats, "
+        f"{sum(len(f['players']) for f in snapshot['formats'].values())} rows"
+    )
+    return snapshot
+
+
 def _refresh_players(
     players: dict[str, Any], espn_by_sleeper: dict[str, dict[str, str]]
 ) -> int:
@@ -287,6 +321,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     players = fetch_nfl_players()
     espn_by_sleeper = _espn_ids_by_sleeper_id(season, players)
     players_written = _refresh_players(players, espn_by_sleeper)
+    adp = _write_adp(season)
 
     log.info("Warehouse ingest complete.")
     return success_response(
@@ -295,6 +330,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "statRows": stat_rows,
             "playersWritten": players_written,
             "espnCrosswalkSize": len(espn_by_sleeper),
+            "adpFormats": sorted(adp["formats"]),
+            "adpFailed": adp["failed"],
         },
         is_api=False,
     )
