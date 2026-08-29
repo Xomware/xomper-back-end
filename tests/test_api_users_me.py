@@ -244,3 +244,75 @@ def test_a_sleeper_outage_does_not_fail_the_link(mod, monkeypatch):
     # Auto-follow is a convenience on top and must not take it down.
     assert response["statusCode"] == 200
     assert body_of(response)["user"]["hasLinkedSleeper"] is True
+
+
+def test_display_name_defaults_to_the_sleeper_handle_on_link(mod, monkeypatch):
+    monkeypatch.setattr(mod, "get_sleeper_user", lambda _: SLEEPER_PROFILE)
+
+    response = mod.handler(
+        event(method="PUT", path="/me/sleeper-link", body={"sleeperUsername": "dgiordano"}),
+        None,
+    )
+
+    # A new user should never be nameless.
+    assert body_of(response)["user"]["displayName"] == "dgiordano"
+
+
+def test_setting_a_display_name(mod):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": "Dom"}),
+        None,
+    )
+
+    assert response["statusCode"] == 200
+    assert body_of(response)["user"]["displayName"] == "Dom"
+
+
+def test_relinking_does_not_overwrite_a_chosen_name(mod, monkeypatch):
+    monkeypatch.setattr(mod, "get_sleeper_user", lambda _: SLEEPER_PROFILE)
+    mod.handler(event(method="PUT", path="/me/display-name", body={"displayName": "Dom"}), None)
+
+    response = mod.handler(
+        event(method="PUT", path="/me/sleeper-link", body={"sleeperUsername": "dgiordano"}),
+        None,
+    )
+
+    # if_not_exists seeds the name; it must not clobber one the user picked.
+    assert body_of(response)["user"]["displayName"] == "Dom"
+
+
+def test_display_name_is_required(mod):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": "   "}),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+
+
+def test_display_name_is_length_capped(mod):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": "x" * 33}),
+        None,
+    )
+
+    assert response["statusCode"] == 400
+
+
+def test_display_name_rejects_control_characters(mod):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": "Dom\nGiordano"}),
+        None,
+    )
+
+    # Otherwise a name can break every surface it renders in.
+    assert response["statusCode"] == 400
+
+
+def test_display_name_is_trimmed(mod):
+    response = mod.handler(
+        event(method="PUT", path="/me/display-name", body={"displayName": "  Dom  "}),
+        None,
+    )
+
+    assert body_of(response)["user"]["displayName"] == "Dom"
