@@ -16,6 +16,8 @@ import types
 from typing import Any
 from unittest.mock import MagicMock
 
+from urllib.error import HTTPError
+
 import pytest
 
 # duckdb reaches the Lambda through a layer, not requirements.txt, so it is not
@@ -227,8 +229,11 @@ class TestEspnPath:
 
     @pytest.fixture
     def espn(self, mod, monkeypatch):
-        monkeypatch.setattr(mod, "fetch_league_settings", lambda lid, season: ESPN_SETTINGS)
-        monkeypatch.setattr(mod, "fetch_league_players", lambda lid, season: [{"id": 1}])
+        monkeypatch.setattr(mod, "fetch_league_settings", lambda lid, season, ck=None: ESPN_SETTINGS)
+        monkeypatch.setattr(
+            mod, "fetch_league_players", lambda lid, season, cookies=None: [{"id": 1}]
+        )
+        monkeypatch.setattr(mod, "get_espn", lambda uid: None)
         monkeypatch.setattr(
             mod, "_stored_crosswalk", lambda: {"1": {"sleeperId": "p1", "source": "stored"}}
         )
@@ -277,12 +282,14 @@ class TestEspnPath:
         assert "season" in json.loads(res["body"])["error"]
 
     def test_unknown_espn_league_is_404(self, espn, monkeypatch):
-        monkeypatch.setattr(espn, "fetch_league_settings", lambda lid, season: None)
+        monkeypatch.setattr(espn, "fetch_league_settings", lambda lid, season, ck=None: None)
         res = _call(espn, {"espnLeagueId": "nope", "season": "2025"})
         assert res["statusCode"] == 404
 
     def test_unreadable_roster_shape_is_502(self, espn, monkeypatch):
-        monkeypatch.setattr(espn, "fetch_league_settings", lambda lid, season: {"settings": {}})
+        monkeypatch.setattr(
+            espn, "fetch_league_settings", lambda lid, season, ck=None: {"settings": {}}
+        )
         res = _call(espn, {"espnLeagueId": "899513", "season": "2025"})
         assert res["statusCode"] == 502
 
@@ -296,3 +303,91 @@ class TestEspnPath:
         res = _call(mod, {})
         error = json.loads(res["body"])["error"]
         assert "leagueId" in error and "espnLeagueId" in error and "settings" in error
+
+
+class TestEspnPrivateLeagues:
+    """Private leagues need the caller's cookies; public ones must not."""
+
+    @pytest.fixture
+    def espn(self, mod, monkeypatch):
+        monkeypatch.setattr(mod, "fetch_league_settings", lambda lid, season, ck=None: ESPN_SETTINGS)
+        monkeypatch.setattr(mod, "fetch_league_players", lambda lid, season, cookies=None: [{"id": 1}])
+        monkeypatch.setattr(mod, "_stored_crosswalk", lambda: {})
+        monkeypatch.setattr(mod, "get_espn", lambda uid: None)
+        monkeypatch.setattr(
+            mod, "scored_rows", lambda p, xw: {"rows": [("p1", "RB", 250.0)], "unresolved": []}
+        )
+        monkeypatch.setattr(mod, "load_scored", lambda con, rows: rows)
+        return mod
+
+    def _event(self, body, user_id=None):
+        ev = {"body": json.dumps(body)}
+        if user_id:
+            ev["requestContext"] = {"authorizer": {"sub": user_id}}
+        return ev
+
+    def test_unauthenticated_callers_get_no_cookies(self, espn):
+        assert espn._caller_espn_cookies({}) is None
+
+    def test_a_caller_who_never_connected_espn_gets_none(self, espn, monkeypatch):
+        monkeypatch.setattr(espn, "get_espn", lambda uid: None)
+        assert espn._caller_espn_cookies(self._event({}, "user-1")) is None
+
+    def test_cookies_are_read_for_an_authenticated_caller(self, espn, monkeypatch):
+        monkeypatch.setattr(espn, "get_espn", lambda uid: {"espn_s2": "a", "SWID": "{b}"})
+        assert espn._caller_espn_cookies(self._event({}, "user-1")) == {"espn_s2": "a", "SWID": "{b}"}
+
+    def test_cookies_reach_the_upstream_calls(self, espn, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(espn, "get_espn", lambda uid: {"espn_s2": "a", "SWID": "{b}"})
+        monkeypatch.setattr(
+            espn, "fetch_league_settings",
+            lambda lid, season, ck=None: seen.update(settings=ck) or ESPN_SETTINGS,
+        )
+        monkeypatch.setattr(
+            espn, "fetch_league_players",
+            lambda lid, season, cookies=None: seen.update(players=cookies) or [{"id": 1}],
+        )
+        espn.handler(self._event({"espnLeagueId": "1", "season": "2025"}, "user-1"), None)
+        assert seen["settings"] == {"espn_s2": "a", "SWID": "{b}"}
+        assert seen["players"] == {"espn_s2": "a", "SWID": "{b}"}
+
+    def test_public_league_still_works_with_no_caller(self, espn):
+        res = espn.handler(self._event({"espnLeagueId": "1", "season": "2025"}), None)
+        assert res["statusCode"] == 200
+
+    def test_private_league_without_cookies_says_connect(self, espn, monkeypatch):
+        def denied(lid, season, ck=None):
+            raise HTTPError("u", 401, "Unauthorized", {}, None)
+
+        monkeypatch.setattr(espn, "fetch_league_settings", denied)
+        res = espn.handler(self._event({"espnLeagueId": "1", "season": "2025"}), None)
+        assert res["statusCode"] == 403
+        body = json.loads(res["body"])
+        assert body["error"] == "espn_auth_required"
+        # No stored cookies -> the user has never connected ESPN.
+        assert body["hasStoredCredentials"] is False
+
+    def test_private_league_with_stale_cookies_says_reconnect(self, espn, monkeypatch):
+        def denied(lid, season, ck=None):
+            raise HTTPError("u", 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(espn, "get_espn", lambda uid: {"espn_s2": "old", "SWID": "{b}"})
+        monkeypatch.setattr(espn, "fetch_league_settings", denied)
+        res = espn.handler(self._event({"espnLeagueId": "1", "season": "2025"}, "user-1"), None)
+        assert res["statusCode"] == 403
+        # Cookies existed and were rejected -> expired, reconnect rather than connect.
+        assert json.loads(res["body"])["hasStoredCredentials"] is True
+
+    def test_other_http_errors_are_not_swallowed(self, espn, monkeypatch):
+        def boom(lid, season, ck=None):
+            raise HTTPError("u", 500, "Server Error", {}, None)
+
+        monkeypatch.setattr(espn, "fetch_league_settings", boom)
+        res = espn.handler(self._event({"espnLeagueId": "1", "season": "2025"}), None)
+        assert res["statusCode"] != 403
+
+    def test_cookies_never_appear_in_the_response(self, espn, monkeypatch):
+        monkeypatch.setattr(espn, "get_espn", lambda uid: {"espn_s2": "SECRET", "SWID": "{b}"})
+        res = espn.handler(self._event({"espnLeagueId": "1", "season": "2025"}, "user-1"), None)
+        assert "SECRET" not in res["body"]
