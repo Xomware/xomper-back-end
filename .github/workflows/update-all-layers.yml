@@ -87,19 +87,39 @@ jobs:
 
           echo "Updating layer for $FUNCTION_NAME to ${{ needs.get-layer-arn.outputs.layer_arn }}"
 
-          aws lambda update-function-configuration \
+          # --layers REPLACES the whole list, so passing only the shared layer
+          # STRIPS any other one the function carries. This workflow exists to
+          # repair layers and would instead have removed xomper-duckdb from
+          # api-values-compute and warehouse-ingest. deploy-backend.yml already
+          # learned this; read the extras back and pass them through.
+          EXTRA_LAYERS=$(aws lambda get-function-configuration \
             --function-name $FUNCTION_NAME \
-            --layers ${{ needs.get-layer-arn.outputs.layer_arn }} \
-            --region $AWS_REGION || echo "⚠️  Function $FUNCTION_NAME not found, skipping..."
-
-          # Wait for update to complete
-          if aws lambda get-function --function-name $FUNCTION_NAME --region $AWS_REGION &>/dev/null; then
-            echo "Waiting for $FUNCTION_NAME update to complete..."
-            aws lambda wait function-updated \
-              --function-name $FUNCTION_NAME \
-              --region $AWS_REGION || true
-            echo "✅ $FUNCTION_NAME updated successfully"
+            --query "Layers[?!contains(Arn, 'xomper-shared-packages')].Arn" \
+            --output text --region $AWS_REGION 2>/dev/null | tr '\t' ' ')
+          if [ -n "$EXTRA_LAYERS" ]; then
+            echo "Preserving extra layers: $EXTRA_LAYERS"
           fi
+
+          # Tolerate a function terraform has not created yet; fail on
+          # anything else. `|| echo` here reported a false success for an
+          # AccessDenied and left a lambda on a stale layer.
+          if ! ERR=$(aws lambda update-function-configuration \
+            --function-name $FUNCTION_NAME \
+            --layers ${{ needs.get-layer-arn.outputs.layer_arn }} $EXTRA_LAYERS \
+            --region $AWS_REGION 2>&1); then
+            if echo "$ERR" | grep -q "ResourceNotFoundException"; then
+              echo "Function $FUNCTION_NAME does not exist yet, skipping."
+              exit 0
+            fi
+            echo "::error::Updating layers for $FUNCTION_NAME failed: $ERR"
+            exit 1
+          fi
+
+          echo "Waiting for $FUNCTION_NAME update to complete..."
+          aws lambda wait function-updated \
+            --function-name $FUNCTION_NAME \
+            --region $AWS_REGION
+          echo "$FUNCTION_NAME updated"
 
   summary:
     needs: [get-layer-arn, get-all-lambdas, update-all-lambdas]
