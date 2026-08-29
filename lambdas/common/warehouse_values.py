@@ -122,6 +122,25 @@ def score_players(
     ).fetchall()
 
 
+def load_scored(
+    con: duckdb.DuckDBPyConnection,
+    rows: list[tuple[str, str, float]],
+) -> list[tuple[str, str, float]]:
+    """Build the `scored` table from points someone else already computed.
+
+    `score_players` derives points from the warehouse projections and a
+    league's scoring settings. An ESPN league arrives pre-scored instead — ESPN
+    applies its own scoring server-side — so this is the other way into the same
+    table `values_for` reads.
+    """
+    con.execute(
+        "CREATE OR REPLACE TABLE scored(player_id VARCHAR, position VARCHAR, points DOUBLE)"
+    )
+    if rows:
+        con.executemany("INSERT INTO scored VALUES (?, ?, ?)", rows)
+    return rows
+
+
 def starters_by_position(
     roster_positions: list[str],
     num_teams: int,
