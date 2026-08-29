@@ -129,3 +129,31 @@ def test_unlink_removes_the_link_but_keeps_the_user(users_table, store):
 
     assert "sleeperUserId" not in record
     assert record["email"] == "dom@example.com"
+
+
+def test_relinking_refreshes_a_display_name_we_seeded(users_table, store):
+    """A name the user never chose must not outlive the handle it came from.
+
+    Observed live: an account relinked to reesegriffin still displayed as
+    "domgiordano", sitting next to the real domgiordano in a friends list with
+    both rows rendering identically.
+    """
+    store.link_sleeper("cog-1", "s-1", "oldhandle")
+    store.link_sleeper("cog-1", "s-2", "newhandle")
+
+    assert store.get_user("cog-1")["displayName"] == "newhandle"
+
+
+def test_relinking_keeps_a_name_the_user_chose(users_table, store):
+    store.link_sleeper("cog-1", "s-1", "oldhandle")
+    store.set_display_name("cog-1", "Dom")
+    store.link_sleeper("cog-1", "s-2", "newhandle")
+
+    assert store.get_user("cog-1")["displayName"] == "Dom"
+    assert store.get_user("cog-1")["sleeperUsername"] == "newhandle"
+
+
+def test_first_link_still_seeds_the_name(users_table, store):
+    store.link_sleeper("cog-1", "s-1", "onlyhandle")
+
+    assert store.get_user("cog-1")["displayName"] == "onlyhandle"
