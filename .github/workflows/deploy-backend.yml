@@ -110,6 +110,7 @@ jobs:
             tests/test_season_guard.py \
             tests/test_platform_users.py \
             tests/test_platform_follows.py \
+            tests/test_social_store.py \
             -v --cov=lambdas/common
 
   test-lambdas:
