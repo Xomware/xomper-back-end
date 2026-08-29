@@ -3,7 +3,10 @@ API — Compute league values
 ===========================
 POST /values/compute
 
-Body: { "leagueId": "<sleeper league id>" }
+Body, one of:
+  { "leagueId": "<sleeper league id>" }             Sleeper, settings resolved
+  { "scoring", "rosterPositions", "numTeams", ... } settings supplied directly
+  { "espnLeagueId", "season", ... }                 ESPN, pre-scored upstream
 
 Returns every projected player valued under THAT league's scoring and roster
 shape, read from the nightly projections Parquet in the warehouse.
@@ -24,11 +27,21 @@ from typing import Any
 import duckdb
 
 from lambdas.common.constants import WAREHOUSE_BUCKET_NAME
+import boto3
+
+from lambdas.common.constants import PLAYERS_TABLE_NAME
 from lambdas.common.errors import handle_errors
+from lambdas.common.espn_crosswalk import crosswalk_from_players_table
+from lambdas.common.espn_projections import (
+    fetch_league_players,
+    fetch_league_settings,
+    scored_rows,
+)
 from lambdas.common.logger import get_logger
 from lambdas.common.sleeper_helper import get_nfl_state, get_sleeper_league
 from lambdas.common.utility_helpers import parse_body, success_response
 from lambdas.common.warehouse_values import (
+    load_scored,
     score_players,
     starters_by_position,
     values_for,
@@ -126,6 +139,80 @@ def explicit_settings(body: dict[str, Any]) -> tuple[dict[str, Any] | None, str 
     }, None
 
 
+# ESPN roster slot ids -> the position names warehouse_values expects.
+ESPN_SLOTS = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "DEF", 17: "K", 23: "FLEX"}
+
+
+def _stored_crosswalk() -> dict[str, dict[str, str]]:
+    """The ingest's espn_id map, read straight off the players table."""
+    table = boto3.resource("dynamodb").Table(PLAYERS_TABLE_NAME)
+    players: dict[str, dict[str, Any]] = {}
+    kwargs: dict[str, Any] = {}
+    while True:
+        page = table.scan(**kwargs)
+        for item in page.get("Items", []):
+            players[str(item.get("playerId"))] = item
+        key = page.get("LastEvaluatedKey")
+        if not key:
+            break
+        kwargs["ExclusiveStartKey"] = key
+    return crosswalk_from_players_table(players)
+
+
+def resolve_espn_settings(league_id: str, season: str) -> dict[str, Any] | None:
+    """Roster shape and team count from ESPN's own settings.
+
+    No scoring: an ESPN league never supplies one. Its projections arrive
+    already scored under its own rules (see espn_projections), which is the
+    only safe way to read ESPN scoring at all — #112.
+    """
+    league = fetch_league_settings(league_id, season)
+    if not league:
+        return None
+
+    settings = league.get("settings") or {}
+    slot_counts = (settings.get("rosterSettings") or {}).get("lineupSlotCounts") or {}
+
+    roster_positions: list[str] = []
+    for slot_id, count in slot_counts.items():
+        position = ESPN_SLOTS.get(int(slot_id))
+        if not position:
+            continue
+        roster_positions.extend([position] * int(count))
+
+    return {
+        "rosterPositions": roster_positions,
+        "numTeams": int(settings.get("size") or 12),
+        "season": str(season),
+        "espnLeagueId": str(league_id),
+    }
+
+
+def compute_espn_values(settings: dict[str, Any], crosswalk: dict[str, Any]) -> dict[str, Any]:
+    """Values for an ESPN league, from points ESPN already applied.
+
+    `score_players` is skipped entirely — there is nothing to score. `load_scored`
+    fills the same table `values_for` reads, so everything downstream is the
+    Sleeper path unchanged.
+    """
+    players = fetch_league_players(settings["espnLeagueId"], settings["season"])
+    scored = scored_rows(players, crosswalk)
+
+    con = _connect()
+    load_scored(con, scored["rows"])
+    starters = starters_by_position(
+        settings["rosterPositions"], settings["numTeams"], scored["rows"]
+    )
+    values = values_for(con, starters)
+
+    return {
+        "starters": starters,
+        "count": len(values),
+        "values": values,
+        "unresolved": scored["unresolved"],
+    }
+
+
 def compute_values(settings: dict[str, Any]) -> dict[str, Any]:
     """Values for a resolved settings blob. Knows nothing about any platform."""
     con = _connect()
@@ -143,6 +230,40 @@ def compute_values(settings: dict[str, Any]) -> dict[str, Any]:
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     body = parse_body(event) or {}
     league_id = body.get("leagueId")
+    espn_league_id = body.get("espnLeagueId")
+
+    if espn_league_id:
+        season = str(body.get("season") or "")
+        if not season:
+            return success_response(
+                {"error": "season is required with espnLeagueId"}, status_code=400
+            )
+
+        settings = resolve_espn_settings(espn_league_id, season)
+        if settings is None:
+            return success_response({"error": "espn league not found"}, status_code=404)
+        if not settings["rosterPositions"]:
+            return success_response(
+                {"error": "could not read roster shape from espn"}, status_code=502
+            )
+
+        log.info(f"Valuing espn league {espn_league_id} ({season})")
+        computed = compute_espn_values(settings, _stored_crosswalk())
+
+        return success_response({
+            "espnLeagueId": settings["espnLeagueId"],
+            "season": settings["season"],
+            "numTeams": settings["numTeams"],
+            # ESPN leagues are valued off ESPN's own projections while Sleeper
+            # leagues use the warehouse, so values do not compare across
+            # platforms. Say which produced these rather than let a caller
+            # assume they are the same currency.
+            "projectionSource": "espn",
+            "starters": computed["starters"],
+            "count": computed["count"],
+            "values": computed["values"],
+            "unresolved": computed["unresolved"],
+        })
 
     if league_id:
         settings = resolve_sleeper_settings(league_id)
@@ -156,7 +277,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             return success_response({"error": error}, status_code=400)
     else:
         return success_response(
-            {"error": "leagueId or explicit league settings are required"},
+            {"error": "leagueId, espnLeagueId or explicit league settings are required"},
             status_code=400,
         )
 
@@ -171,6 +292,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "leagueId": league_id,
         "season": settings["season"],
         "numTeams": settings["numTeams"],
+        "projectionSource": "warehouse",
         # Returned so a client can show what the values were built from rather
         # than presenting them as absolute truth.
         "starters": computed["starters"],
