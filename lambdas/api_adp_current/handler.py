@@ -15,6 +15,7 @@ board is expected to show which it is.
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
 
 from lambdas.common.constants import WAREHOUSE_BUCKET_NAME
 from lambdas.common.errors import ValidationError, handle_errors
@@ -28,10 +29,21 @@ log = get_logger(HANDLER)
 ADP_KEY = "adp/current/adp.json"
 
 
-def _load() -> dict[str, Any]:
+def _load() -> dict[str, Any] | None:
+    """The snapshot, or None if the ingest has not written one yet.
+
+    None is an expected state, not a failure: the ingest runs at 08:00 UTC, so
+    between deploying this endpoint and the next run there is genuinely no
+    snapshot. A caller needs to tell that apart from the warehouse being broken.
+    """
     import json
 
-    obj = boto3.client("s3").get_object(Bucket=WAREHOUSE_BUCKET_NAME, Key=ADP_KEY)
+    try:
+        obj = boto3.client("s3").get_object(Bucket=WAREHOUSE_BUCKET_NAME, Key=ADP_KEY)
+    except ClientError as err:
+        if err.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+            return None
+        raise
     return json.loads(obj["Body"].read())
 
 
@@ -49,6 +61,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
 
     snapshot = _load()
+    if snapshot is None:
+        return success_response(
+            {
+                "error": "no_adp_snapshot",
+                "detail": "the nightly warehouse ingest has not written one yet",
+            },
+            status_code=404,
+        )
 
     if requested:
         payload = snapshot.get("formats", {}).get(requested)
