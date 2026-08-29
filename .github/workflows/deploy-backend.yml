@@ -13,6 +13,19 @@ on:
         default: false
 
 
+# Two pushes close together each build and each update the same lambdas, so
+# without this the slower run finishes last and wins - silently reverting the
+# newer code. That has already cost a deploy on the frontend side.
+#
+# cancel-in-progress is deliberately FALSE here, unlike deploy-frontend. A
+# frontend deploy is one S3 sync plus an invalidation, so cancelling it is safe
+# and the last writer is correct. This workflow updates a matrix of lambda
+# functions one at a time; cancelling mid-matrix leaves some on new code and
+# some on old, which is worse than either version. Queue instead.
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
 env:
   AWS_REGION: us-east-1
 
