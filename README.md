@@ -124,8 +124,6 @@ JWT-based authorization via API Gateway Lambda authorizer.
 
 | Key                          | Description                    |
 | ---------------------------- | ------------------------------ |
-| `/xomper/aws/ACCESS_KEY`     | AWS access key (encrypted)     |
-| `/xomper/aws/SECRET_KEY`     | AWS secret key (encrypted)     |
 | `/xomper/api/API_SECRET_KEY` | JWT signing secret (encrypted) |
 
 ## Handler Pattern
