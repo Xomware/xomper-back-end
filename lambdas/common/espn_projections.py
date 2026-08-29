@@ -16,6 +16,10 @@ The cost is that ESPN leagues are valued off ESPN's projections while Sleeper
 leagues use the warehouse, so values are not comparable across platforms. That
 is fine for drafting, which only ranks players against each other inside one
 league.
+
+Public leagues only. Private ones need the member's espn_s2/SWID cookies, and
+storing a full ESPN session for a feature used twice a year was not worth the
+liability — ESPN drafts are covered by manual mark-off instead (2026-08-29).
 """
 import json
 import urllib.request
@@ -39,12 +43,8 @@ def fetch_league_players(
     league_id: str,
     season: str,
     limit: int = 1500,
-    cookies: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Players with the league's own scoring applied.
-
-    `cookies` carries espn_s2/SWID for a private league. Public leagues need none.
-    """
+    """Players with the league's own scoring applied. Public leagues only."""
     headers = {
         "User-Agent": USER_AGENT,
         "x-fantasy-filter": json.dumps({
@@ -54,9 +54,6 @@ def fetch_league_players(
             }
         }),
     }
-    if cookies:
-        headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
-
     request = urllib.request.Request(
         LEAGUE_URL.format(season=season, league_id=league_id), headers=headers
     )
@@ -64,15 +61,9 @@ def fetch_league_players(
         return json.load(response).get("players") or []
 
 
-def fetch_league_settings(
-    league_id: str,
-    season: str,
-    cookies: dict[str, str] | None = None,
-) -> dict[str, Any] | None:
+def fetch_league_settings(league_id: str, season: str) -> dict[str, Any] | None:
     """The league's roster shape and size. No scoring — see the module docstring."""
     headers = {"User-Agent": USER_AGENT}
-    if cookies:
-        headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
 
     url = LEAGUE_URL.format(season=season, league_id=league_id).replace(
         "view=kona_player_info", "view=mSettings"
