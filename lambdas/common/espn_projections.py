@@ -64,6 +64,24 @@ def fetch_league_players(
         return json.load(response).get("players") or []
 
 
+def fetch_league_settings(
+    league_id: str,
+    season: str,
+    cookies: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """The league's roster shape and size. No scoring — see the module docstring."""
+    headers = {"User-Agent": USER_AGENT}
+    if cookies:
+        headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+
+    url = LEAGUE_URL.format(season=season, league_id=league_id).replace(
+        "view=kona_player_info", "view=mSettings"
+    )
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
 def applied_total(player: dict[str, Any]) -> float | None:
     """The season projection for this player under the league's scoring."""
     for entry in player.get("stats") or []:

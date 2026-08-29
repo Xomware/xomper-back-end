@@ -143,3 +143,23 @@ def build_crosswalk(
         "misses": misses,
         "coverage": len(mapping) / total if total else 0.0,
     }
+
+
+def crosswalk_from_players_table(players: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    """ESPN id -> Sleeper id, read from what the nightly ingest already stored.
+
+    The layered resolution in `build_crosswalk` runs once a night against three
+    upstreams. Re-running it per request would mean fetching Sleeper's 14.6 MB
+    dump plus two APIs to answer one league. The ingest writes `espn_id` and
+    `espn_id_source` onto each player row precisely so this side is a lookup.
+    """
+    mapping: dict[str, dict[str, str]] = {}
+    for player_id, player in players.items():
+        espn_id = player.get("espn_id")
+        if not espn_id:
+            continue
+        mapping[str(espn_id)] = {
+            "sleeperId": str(player_id),
+            "source": str(player.get("espn_id_source") or "stored"),
+        }
+    return mapping

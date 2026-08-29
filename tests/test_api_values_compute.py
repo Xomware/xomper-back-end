@@ -164,6 +164,10 @@ class TestHandlerContract:
             "leagueId": "123",
             "season": "2025",
             "numTeams": 12,
+            # Added deliberately with the ESPN path. ESPN leagues are valued
+            # off ESPN's projections and Sleeper leagues off the warehouse, so
+            # a caller has to be able to tell which currency it received.
+            "projectionSource": "warehouse",
             "starters": STARTERS,
             "count": 2,
             "values": VALUES,
@@ -206,3 +210,89 @@ class TestHandlerContract:
         monkeypatch.setattr(mod, "get_nfl_state", lambda: {})
         res = _call(mod, {"leagueId": "123"})
         assert res["statusCode"] == 500
+
+
+ESPN_SETTINGS = {
+    "settings": {
+        "size": 10,
+        "rosterSettings": {
+            "lineupSlotCounts": {"0": 1, "2": 2, "4": 2, "6": 1, "23": 1, "16": 1, "17": 1, "20": 6}
+        },
+    }
+}
+
+
+class TestEspnPath:
+    """The ESPN league path, which skips scoring entirely."""
+
+    @pytest.fixture
+    def espn(self, mod, monkeypatch):
+        monkeypatch.setattr(mod, "fetch_league_settings", lambda lid, season: ESPN_SETTINGS)
+        monkeypatch.setattr(mod, "fetch_league_players", lambda lid, season: [{"id": 1}])
+        monkeypatch.setattr(
+            mod, "_stored_crosswalk", lambda: {"1": {"sleeperId": "p1", "source": "stored"}}
+        )
+        monkeypatch.setattr(
+            mod, "scored_rows", lambda players, xw: {
+                "rows": [("p1", "RB", 250.0)],
+                "unresolved": [{"espnId": "9", "name": "Nobody", "reason": "no_crosswalk"}],
+            }
+        )
+        monkeypatch.setattr(mod, "load_scored", lambda con, rows: rows)
+        return mod
+
+    def test_reads_roster_shape_from_espn(self, espn):
+        settings = espn.resolve_espn_settings("899513", "2025")
+        assert settings["numTeams"] == 10
+        assert settings["rosterPositions"].count("RB") == 2
+        assert settings["rosterPositions"].count("WR") == 2
+        assert "FLEX" in settings["rosterPositions"]
+        # Slot 20 is bench. It is not a starter and must not inflate replacement.
+        assert len(settings["rosterPositions"]) == 9
+
+    def test_espn_settings_carry_no_scoring(self, espn):
+        # An ESPN league never supplies Sleeper-shaped scoring; #112 established
+        # that translating its statIds cannot be done safely.
+        assert "scoring" not in espn.resolve_espn_settings("899513", "2025")
+
+    def test_values_an_espn_league(self, espn):
+        res = _call(espn, {"espnLeagueId": "899513", "season": "2025"})
+        assert res["statusCode"] == 200
+        body = json.loads(res["body"])
+        assert body["espnLeagueId"] == "899513"
+        assert body["numTeams"] == 10
+        assert body["values"] == VALUES
+
+    def test_says_which_projection_source_it_used(self, espn):
+        body = json.loads(_call(espn, {"espnLeagueId": "899513", "season": "2025"})["body"])
+        assert body["projectionSource"] == "espn"
+
+    def test_reports_unresolved_players(self, espn):
+        body = json.loads(_call(espn, {"espnLeagueId": "899513", "season": "2025"})["body"])
+        assert body["unresolved"][0]["reason"] == "no_crosswalk"
+
+    def test_season_is_required(self, espn):
+        res = _call(espn, {"espnLeagueId": "899513"})
+        assert res["statusCode"] == 400
+        assert "season" in json.loads(res["body"])["error"]
+
+    def test_unknown_espn_league_is_404(self, espn, monkeypatch):
+        monkeypatch.setattr(espn, "fetch_league_settings", lambda lid, season: None)
+        res = _call(espn, {"espnLeagueId": "nope", "season": "2025"})
+        assert res["statusCode"] == 404
+
+    def test_unreadable_roster_shape_is_502(self, espn, monkeypatch):
+        monkeypatch.setattr(espn, "fetch_league_settings", lambda lid, season: {"settings": {}})
+        res = _call(espn, {"espnLeagueId": "899513", "season": "2025"})
+        assert res["statusCode"] == 502
+
+    def test_espn_wins_over_a_sleeper_league_id(self, espn):
+        body = json.loads(
+            _call(espn, {"espnLeagueId": "899513", "season": "2025", "leagueId": "123"})["body"]
+        )
+        assert body["projectionSource"] == "espn"
+
+    def test_empty_body_names_all_three_options(self, mod):
+        res = _call(mod, {})
+        error = json.loads(res["body"])["error"]
+        assert "leagueId" in error and "espnLeagueId" in error and "settings" in error
