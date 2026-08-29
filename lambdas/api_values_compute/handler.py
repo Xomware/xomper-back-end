@@ -33,7 +33,6 @@ import boto3
 
 from lambdas.common.constants import PLAYERS_TABLE_NAME
 from lambdas.common.errors import handle_errors
-from lambdas.common.espn_credentials import get_espn
 from lambdas.common.espn_crosswalk import crosswalk_from_players_table
 from lambdas.common.espn_projections import (
     fetch_league_players,
@@ -146,23 +145,6 @@ def explicit_settings(body: dict[str, Any]) -> tuple[dict[str, Any] | None, str 
 ESPN_SLOTS = {0: "QB", 2: "RB", 4: "WR", 6: "TE", 16: "DEF", 17: "K", 23: "FLEX"}
 
 
-def _caller_espn_cookies(event: dict[str, Any]) -> dict[str, str] | None:
-    """The caller's ESPN cookies, or None.
-
-    Not an auth check. `/values/compute` serves unauthenticated callers for
-    Sleeper and explicit settings, so a missing authorizer context here is an
-    ordinary case meaning "public ESPN leagues only", not a failure.
-
-    The cookies are read, used for one upstream call and discarded. They are
-    never logged and never reach the response — see espn_credentials.
-    """
-    context = (event.get("requestContext") or {}).get("authorizer") or {}
-    user_id = context.get("sub")
-    if not user_id:
-        return None
-    return get_espn(str(user_id))
-
-
 def _stored_crosswalk() -> dict[str, dict[str, str]]:
     """The ingest's espn_id map, read straight off the players table."""
     table = boto3.resource("dynamodb").Table(PLAYERS_TABLE_NAME)
@@ -179,18 +161,14 @@ def _stored_crosswalk() -> dict[str, dict[str, str]]:
     return crosswalk_from_players_table(players)
 
 
-def resolve_espn_settings(
-    league_id: str,
-    season: str,
-    cookies: dict[str, str] | None = None,
-) -> dict[str, Any] | None:
+def resolve_espn_settings(league_id: str, season: str) -> dict[str, Any] | None:
     """Roster shape and team count from ESPN's own settings.
 
     No scoring: an ESPN league never supplies one. Its projections arrive
     already scored under its own rules (see espn_projections), which is the
     only safe way to read ESPN scoring at all — #112.
     """
-    league = fetch_league_settings(league_id, season, cookies)
+    league = fetch_league_settings(league_id, season)
     if not league:
         return None
 
@@ -212,18 +190,14 @@ def resolve_espn_settings(
     }
 
 
-def compute_espn_values(
-    settings: dict[str, Any],
-    crosswalk: dict[str, Any],
-    cookies: dict[str, str] | None = None,
-) -> dict[str, Any]:
+def compute_espn_values(settings: dict[str, Any], crosswalk: dict[str, Any]) -> dict[str, Any]:
     """Values for an ESPN league, from points ESPN already applied.
 
     `score_players` is skipped entirely — there is nothing to score. `load_scored`
     fills the same table `values_for` reads, so everything downstream is the
     Sleeper path unchanged.
     """
-    players = fetch_league_players(settings["espnLeagueId"], settings["season"], cookies=cookies)
+    players = fetch_league_players(settings["espnLeagueId"], settings["season"])
     scored = scored_rows(players, crosswalk)
 
     con = _connect()
@@ -267,20 +241,17 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 {"error": "season is required with espnLeagueId"}, status_code=400
             )
 
-        cookies = _caller_espn_cookies(event)
-
         try:
-            settings = resolve_espn_settings(espn_league_id, season, cookies)
+            settings = resolve_espn_settings(espn_league_id, season)
         except HTTPError as err:
             if err.code not in (401, 403):
                 raise
-            # The league is private and this caller either never connected
-            # ESPN or their cookies expired. Those need different things from
-            # the user, so say which.
+            # Private league. ESPN support is public-only by design now - see
+            # the ESPN cut, 2026-08-29 - so there is nothing to retry with.
             return success_response(
                 {
-                    "error": "espn_auth_required",
-                    "hasStoredCredentials": cookies is not None,
+                    "error": "espn_league_is_private",
+                    "detail": "only public ESPN leagues are supported",
                 },
                 status_code=403,
             )
@@ -293,7 +264,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
 
         log.info(f"Valuing espn league {espn_league_id} ({season})")
-        computed = compute_espn_values(settings, _stored_crosswalk(), cookies)
+        computed = compute_espn_values(settings, _stored_crosswalk())
 
         return success_response({
             "espnLeagueId": settings["espnLeagueId"],
