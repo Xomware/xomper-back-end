@@ -138,3 +138,24 @@ class TestEndpoint:
     def test_missing_snapshot_for_a_supported_format_is_404(self, mod):
         res = mod.handler({"queryStringParameters": {"format": "rookie"}}, None)
         assert res["statusCode"] == 404
+
+    def test_no_snapshot_at_all_is_a_named_404(self, mod, monkeypatch):
+        # Between deploying the endpoint and the 08:00 UTC ingest there is
+        # genuinely no snapshot. That must not read as a broken warehouse.
+        monkeypatch.setattr(mod, "_load", lambda: None)
+        res = mod.handler({}, None)
+        assert res["statusCode"] == 404
+        body = json.loads(res["body"])
+        assert body["error"] == "no_adp_snapshot"
+        assert "ingest" in body["detail"]
+
+    def test_a_real_s3_failure_still_raises(self, mod, monkeypatch):
+        from botocore.exceptions import ClientError
+
+        def denied():
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
+
+        monkeypatch.setattr(mod, "_load", denied)
+        res = mod.handler({}, None)
+        # Not a 404 - a permissions problem is not "no snapshot yet".
+        assert res["statusCode"] != 404
