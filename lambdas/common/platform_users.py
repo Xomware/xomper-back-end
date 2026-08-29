@@ -167,3 +167,38 @@ def unlink_sleeper(user_id: str) -> dict[str, Any]:
     except ClientError as err:
         raise DynamoDBError(f"unlink_sleeper failed: {err}") from err
     return response.get("Attributes", {})
+
+
+def find_by_sleeper_ids(sleeper_user_ids: set[str]) -> dict[str, dict[str, Any]]:
+    """Map Sleeper user id -> the Xomper account that claimed it.
+
+    A scan, not a query: nothing indexes sleeperUserId, and adding a GSI for
+    a table this size would cost more than it saves. Revisit if the estate
+    grows past a few hundred users -- the caller here is a suggestion list,
+    so a slow path degrades a nicety rather than a login.
+
+    A handle can be claimed more than once (claims are unverified by design).
+    Last writer wins here, which is fine for suggestions: the point is to
+    surface someone to befriend, and the friendship itself is keyed on the
+    Cognito id that the request targets.
+    """
+    if not sleeper_user_ids:
+        return {}
+
+    found: dict[str, dict[str, Any]] = {}
+    kwargs: dict[str, Any] = {
+        "ProjectionExpression": "userId, displayName, sleeperUserId, sleeperUsername, sleeperAvatar",
+    }
+    try:
+        while True:
+            response = _table().scan(**kwargs)
+            for item in response.get("Items", []):
+                claimed = str(item.get("sleeperUserId") or "")
+                if claimed in sleeper_user_ids:
+                    found[claimed] = item
+            token = response.get("LastEvaluatedKey")
+            if not token:
+                return found
+            kwargs["ExclusiveStartKey"] = token
+    except ClientError as err:
+        raise DynamoDBError(f"find_by_sleeper_ids failed: {err}") from err
