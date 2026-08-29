@@ -2,6 +2,7 @@
 API — Current user
 ==================
 GET    /me/profile         -> the caller's platform record
+PUT    /me/display-name    -> set the name this user goes by here
 PUT    /me/sleeper-link    -> link a Sleeper account
 DELETE /me/sleeper-unlink  -> unlink it
 
@@ -50,6 +51,11 @@ def _shape(record: dict[str, Any]) -> dict[str, Any]:
         "sleeperUserId": sleeper_user_id,
         "sleeperUsername": record.get("sleeperUsername", ""),
         "sleeperAvatar": record.get("sleeperAvatar", ""),
+        # Xomper's own name for this user. Falls back to the Sleeper handle
+        # only so an older record is not nameless; new links seed it.
+        "displayName": record.get("displayName")
+        or record.get("sleeperUsername")
+        or "",
         "hasLinkedSleeper": bool(sleeper_user_id),
         "createdAt": record.get("createdAt", ""),
         "updatedAt": record.get("updatedAt", ""),
@@ -61,6 +67,7 @@ def _shape(record: dict[str, Any]) -> dict[str, Any]:
 # quietly performing the wrong action on the record.
 _ROUTES = {
     "profile": ("get", "GET"),
+    "display-name": ("display_name", "PUT"),
     "sleeper-link": ("link", "PUT"),
     "sleeper-unlink": ("unlink", "DELETE"),
 }
@@ -134,6 +141,25 @@ def _auto_follow_leagues(user_id: str, sleeper_user_id: str) -> None:
         log.warning(f"users/me: auto-follow skipped for {user_id} - {err}")
 
 
+# Long enough to be a real name, short enough not to break every layout it
+# appears in.
+DISPLAY_NAME_MAX = 32
+
+
+def _set_display_name(user_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    name = str(parse_body(event).get("displayName") or "").strip()
+    if not name:
+        raise ValidationError("displayName is required")
+    if len(name) > DISPLAY_NAME_MAX:
+        raise ValidationError(f"displayName must be {DISPLAY_NAME_MAX} characters or fewer")
+
+    # Control characters would let a name break the surfaces it renders in.
+    if any(ord(c) < 32 for c in name):
+        raise ValidationError("displayName contains invalid characters")
+
+    return platform_users.set_display_name(user_id, name)
+
+
 @handle_errors(HANDLER)
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     caller = get_caller(event)
@@ -144,7 +170,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # email or createdAt.
     record = platform_users.ensure_user(caller.user_id, caller.email)
 
-    if action == "link":
+    if action == "display_name":
+        record = _set_display_name(caller.user_id, event)
+    elif action == "link":
         record = _link(caller.user_id, event)
     elif action == "unlink":
         record = platform_users.unlink_sleeper(caller.user_id)
