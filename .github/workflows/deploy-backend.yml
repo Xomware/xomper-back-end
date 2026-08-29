@@ -242,10 +242,23 @@ jobs:
             echo "Preserving extra layers: $EXTRA_LAYERS"
           fi
 
-          aws lambda update-function-configuration \
+          # `|| echo` here swallowed EVERY failure and reported success. An
+          # AccessDenied on the duckdb layer printed "not found, skipping..."
+          # -- a message that was simply false, for a function that exists --
+          # and three green deploys left api-values-compute on a stale shared
+          # layer. Tolerate a genuinely absent function; fail on anything else.
+          set -o pipefail
+          if ! ERR=$(aws lambda update-function-configuration \
             --function-name $FUNCTION_NAME \
             --layers ${{ needs.deploy-layer.outputs.layer_arn }} $EXTRA_LAYERS \
-            --region $AWS_REGION || echo "Function $FUNCTION_NAME not found, skipping..."
+            --region $AWS_REGION 2>&1); then
+            if echo "$ERR" | grep -q "ResourceNotFoundException"; then
+              echo "Function $FUNCTION_NAME does not exist yet, skipping."
+            else
+              echo "::error::Updating layers for $FUNCTION_NAME failed: $ERR"
+              exit 1
+            fi
+          fi
 
   deploy-changed-lambdas:
     permissions:
