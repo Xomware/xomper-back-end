@@ -21,6 +21,7 @@ the database. The link step now resolves the username against Sleeper
 server-side, so an unlinkable handle is rejected at the source rather than
 being stored and failing later during roster matching.
 """
+import unicodedata
 from typing import Any
 
 from lambdas.common import platform_follows, platform_users
@@ -153,8 +154,13 @@ def _set_display_name(user_id: str, event: dict[str, Any]) -> dict[str, Any]:
     if len(name) > DISPLAY_NAME_MAX:
         raise ValidationError(f"displayName must be {DISPLAY_NAME_MAX} characters or fewer")
 
-    # Control characters would let a name break the surfaces it renders in.
-    if any(ord(c) < 32 for c in name):
+    # Unicode category C covers control (Cc), format (Cf), private-use (Co)
+    # and surrogate (Cs) codepoints. An `ord(c) < 32` floor caught only Cc,
+    # letting through the ones that actually matter here: U+202E reverses the
+    # rendering of everything after it, so a stored name displays as something
+    # else in every surface, and U+200B lets two accounts hold names that look
+    # identical.
+    if any(unicodedata.category(c).startswith("C") for c in name):
         raise ValidationError("displayName contains invalid characters")
 
     return platform_users.set_display_name(user_id, name)
