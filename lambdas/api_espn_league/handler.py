@@ -1,9 +1,14 @@
 """
 API — ESPN league read proxy
 ============================
-GET    /espn/league       -> proxy one ESPN league read
-PUT    /espn/credentials  -> store the caller's espn_s2 + SWID
-DELETE /espn/credentials  -> revoke them
+GET    /espn/league      -> proxy one ESPN league read
+PUT    /espn/connect     -> store the caller's espn_s2 + SWID
+DELETE /espn/disconnect  -> revoke them
+
+Flat paths with a part per method: api-gateway-service keys one API Gateway
+resource on `path_part`, so PUT and DELETE on a shared "credentials" part
+collide at apply time. Same reason /me exposes sleeper-link and sleeper-unlink
+rather than two methods on one part.
 
 Why a proxy exists at all: a public ESPN league is readable straight from the
 browser, but a private one needs the member's `espn_s2` and `SWID` cookies, and
@@ -138,8 +143,8 @@ def _delete_credentials(event: dict[str, Any]) -> dict[str, Any]:
 
 _ROUTES = {
     ("league", "GET"): _read_league,
-    ("credentials", "PUT"): _put_credentials,
-    ("credentials", "DELETE"): _delete_credentials,
+    ("connect", "PUT"): _put_credentials,
+    ("disconnect", "DELETE"): _delete_credentials,
 }
 
 

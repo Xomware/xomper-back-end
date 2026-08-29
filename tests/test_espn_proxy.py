@@ -88,6 +88,12 @@ class TestUrlConstruction:
 
 
 class TestRouting:
+    def test_methods_do_not_share_a_path_part(self):
+        # api-gateway-service keys one resource per path_part, so PUT and
+        # DELETE on a shared part cannot both be wired.
+        parts = [part for part, _ in mod._ROUTES]
+        assert len(parts) == len(set(parts))
+
     def test_unknown_route_is_rejected(self):
         # handle_errors turns a ValidationError into a 400 rather than raising.
         res = mod.handler(event("league", "POST"), None)
@@ -97,20 +103,20 @@ class TestRouting:
     def test_credentials_require_both_values(self):
         with patch.object(mod, "store_espn") as store:
             with pytest.raises(ValidationError):
-                mod._put_credentials(event("credentials", "PUT", body={"espn_s2": "a"}))
+                mod._put_credentials(event("connect", "PUT", body={"espn_s2": "a"}))
             store.assert_not_called()
 
     def test_storing_credentials_reports_connected(self):
         with patch.object(mod, "store_espn") as store:
             res = mod._put_credentials(
-                event("credentials", "PUT", body={"espn_s2": "a", "swid": "{b}"})
+                event("connect", "PUT", body={"espn_s2": "a", "swid": "{b}"})
             )
         store.assert_called_once_with("user-1", "a", "{b}")
         assert json.loads(res["body"])["connected"] is True
 
     def test_deleting_credentials_reports_disconnected(self):
         with patch.object(mod, "clear_espn") as clear:
-            res = mod._delete_credentials(event("credentials", "DELETE"))
+            res = mod._delete_credentials(event("disconnect", "DELETE"))
         clear.assert_called_once_with("user-1")
         assert json.loads(res["body"])["connected"] is False
 
