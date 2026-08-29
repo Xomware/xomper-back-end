@@ -81,7 +81,13 @@ def body_of(response):
 def test_empty_graph(mod):
     payload = body_of(mod.handler(event(), None))
 
-    assert payload == {"friends": [], "incoming": [], "outgoing": [], "pendingCount": 0}
+    assert payload == {
+        "friends": [],
+        "incoming": [],
+        "outgoing": [],
+        "pendingCount": 0,
+        "suggestions": [],
+    }
 
 
 def test_requesting_shows_on_both_sides(mod):
@@ -186,3 +192,132 @@ def test_cannot_friend_yourself(mod):
     response = mod.handler(event("PUT", "/me/friend-request", {"userId": A}), None)
 
     assert response["statusCode"] == 400
+
+
+def _sleeper(monkeypatch, mod, leagues, members):
+    monkeypatch.setattr(
+        mod.sleeper_helper, "get_nfl_state", lambda: {"season": "2026"}
+    )
+    monkeypatch.setattr(
+        mod.sleeper_helper, "get_user_leagues", lambda user_id, season: leagues
+    )
+    monkeypatch.setattr(
+        mod.sleeper_helper, "get_sleeper_league_users", lambda league_id: members
+    )
+
+
+def test_suggestions_are_off_unless_asked(mod, monkeypatch, tables):
+    """The auth guard loads this graph on every navigation; it must stay cheap."""
+    called = []
+    monkeypatch.setattr(
+        mod.sleeper_helper,
+        "get_nfl_state",
+        lambda: called.append(1) or {"season": "2026"},
+    )
+
+    payload = body_of(mod.handler(event(), None))
+
+    assert payload["suggestions"] == []
+    assert called == []
+
+
+def _link_a(tables):
+    tables.Table(PLATFORM_USERS_TABLE).put_item(
+        Item={"userId": A, "email": "a@x.com", "displayName": "Ay", "sleeperUserId": "s-a"}
+    )
+
+
+def test_suggests_a_leaguemate_with_an_account(mod, monkeypatch, tables):
+    _link_a(tables)
+    tables.Table(PLATFORM_USERS_TABLE).update_item(
+        Key={"userId": B},
+        UpdateExpression="SET sleeperUserId = :s",
+        ExpressionAttributeValues={":s": "s-b"},
+    )
+    _sleeper(
+        monkeypatch,
+        mod,
+        [{"league_id": "L1"}],
+        [{"user_id": "s-a"}, {"user_id": "s-b"}],
+    )
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    assert [p["userId"] for p in payload["suggestions"]] == [B]
+    assert payload["suggestions"][0]["displayName"] == "Bee"
+
+
+def test_leaguemates_without_an_account_are_not_suggested(mod, monkeypatch, tables):
+    _link_a(tables)
+    _sleeper(
+        monkeypatch,
+        mod,
+        [{"league_id": "L1"}],
+        [{"user_id": "s-a"}, {"user_id": "s-stranger"}],
+    )
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    # Suggesting them would confirm that a given Sleeper handle has no Xomper
+    # account, which is the same leak in reverse.
+    assert payload["suggestions"] == []
+
+
+def test_existing_relationships_are_not_suggested(mod, monkeypatch, tables):
+    _link_a(tables)
+    tables.Table(PLATFORM_USERS_TABLE).update_item(
+        Key={"userId": B},
+        UpdateExpression="SET sleeperUserId = :s",
+        ExpressionAttributeValues={":s": "s-b"},
+    )
+    _sleeper(monkeypatch, mod, [{"league_id": "L1"}], [{"user_id": "s-b"}])
+    mod.handler(event("PUT", "/me/friend-request", {"userId": B}), None)
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    assert payload["suggestions"] == []
+    assert len(payload["outgoing"]) == 1
+
+
+def test_the_caller_is_never_suggested_to_themselves(mod, monkeypatch, tables):
+    _link_a(tables)
+    _sleeper(monkeypatch, mod, [{"league_id": "L1"}], [{"user_id": "s-a"}])
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    assert payload["suggestions"] == []
+
+
+def test_sleeper_being_down_does_not_break_the_page(mod, monkeypatch, tables):
+    _link_a(tables)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("sleeper is down")
+
+    monkeypatch.setattr(mod.sleeper_helper, "get_nfl_state", boom)
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    # The graph itself is what matters; suggestions are a nicety.
+    assert payload["suggestions"] == []
+    assert payload["friends"] == []
+
+
+def test_a_caller_with_no_linked_handle_gets_nothing(mod, monkeypatch, tables):
+    _sleeper(monkeypatch, mod, [{"league_id": "L1"}], [{"user_id": "s-b"}])
+
+    payload = body_of(
+        mod.handler({**event(), "queryStringParameters": {"suggest": "1"}}, None)
+    )
+
+    assert payload["suggestions"] == []
