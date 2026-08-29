@@ -7,6 +7,8 @@ leaves the backend. The redactions are:
 - Email addresses → ``***@***``
 - Sleeper user IDs (long numeric, 15-20 digits) → ``[uid]``
 - Anthropic API keys (``sk-ant-...``) → ``[key]``
+- ESPN ``espn_s2`` cookies → ``espn_s2=[cookie]``
+- ESPN ``SWID`` GUIDs → ``[swid]``
 
 These three patterns cover every known leak shape in xomper logs. A
 generic "JSON field ending in `_key`/`_token`" sweep was rejected in
@@ -35,6 +37,14 @@ SLEEPER_ID_RE = re.compile(r"\b\d{15,20}\b")
 # placeholders like `sk-ant-test`.
 ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[\w-]{20,}")
 
+# ESPN session cookies. espn_s2 is a long percent-encoded blob and SWID is a
+# braced GUID. Both grant access to the member's whole ESPN account, not just
+# fantasy, so they must never survive into a log line.
+ESPN_S2_RE = re.compile(r"espn_s2=[^;\s\"']+", re.IGNORECASE)
+SWID_RE = re.compile(
+    r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}"
+)
+
 
 def redact(text: str) -> str:
     """Apply all PII redactions to ``text``. Best-effort; doesn't raise.
@@ -48,4 +58,6 @@ def redact(text: str) -> str:
     text = EMAIL_RE.sub("***@***", text)
     text = SLEEPER_ID_RE.sub("[uid]", text)
     text = ANTHROPIC_KEY_RE.sub("[key]", text)
+    text = ESPN_S2_RE.sub("espn_s2=[cookie]", text)
+    text = SWID_RE.sub("[swid]", text)
     return text
