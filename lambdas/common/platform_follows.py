@@ -154,3 +154,36 @@ def followers_of(league_id: str) -> list[str]:
         for item in response.get("Items", [])
         if item.get("userId") and not item.get("unfollowed")
     ]
+
+
+def all_followed_leagues() -> dict[str, list[str]]:
+    """Every league someone follows, mapped to its followers.
+
+    One scan rather than a query per league: a scheduled job needs the whole
+    picture, and there is no key that enumerates distinct leagues. The
+    leagueId-index answers the per-league question; nothing answers "which
+    leagues exist" without reading the table.
+
+    This is the cost control the follow table was built for. A league nobody
+    follows is not in the result, so a job driven by this never pays Sleeper
+    or SES for an audience of zero.
+    """
+    leagues: dict[str, list[str]] = {}
+    kwargs: dict[str, Any] = {
+        "ProjectionExpression": "userId, leagueId, unfollowed",
+    }
+    try:
+        while True:
+            response = _table().scan(**kwargs)
+            for item in response.get("Items", []):
+                league_id = str(item.get("leagueId") or "")
+                user_id = str(item.get("userId") or "")
+                if not league_id or not user_id or item.get("unfollowed"):
+                    continue
+                leagues.setdefault(league_id, []).append(user_id)
+            token = response.get("LastEvaluatedKey")
+            if not token:
+                return leagues
+            kwargs["ExclusiveStartKey"] = token
+    except ClientError as err:
+        raise DynamoDBError(f"all_followed_leagues failed: {err}") from err
