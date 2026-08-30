@@ -157,3 +157,35 @@ def test_first_link_still_seeds_the_name(users_table, store):
     store.link_sleeper("cog-1", "s-1", "onlyhandle")
 
     assert store.get_user("cog-1")["displayName"] == "onlyhandle"
+
+
+def test_unlink_drops_a_name_we_seeded(users_table, store):
+    """Unlink is the last moment a derived name can be told from a chosen one.
+
+    Once the handle is gone, "alexnovak02" is just a string and link_sleeper
+    has nothing to compare against -- which left an account linked to
+    nobody123456 still displaying as alexnovak02.
+    """
+    store.link_sleeper("cog-1", "s-1", "alexnovak02")
+    store.unlink_sleeper("cog-1")
+
+    assert "displayName" not in store.get_user("cog-1")
+
+    store.link_sleeper("cog-1", "s-2", "nobody123456")
+    assert store.get_user("cog-1")["displayName"] == "nobody123456"
+
+
+def test_unlink_keeps_a_name_the_user_chose(users_table, store):
+    store.link_sleeper("cog-1", "s-1", "alexnovak02")
+    store.set_display_name("cog-1", "Alex")
+    store.unlink_sleeper("cog-1")
+
+    assert store.get_user("cog-1")["displayName"] == "Alex"
+
+
+def test_unlink_still_clears_the_sleeper_fields(users_table, store):
+    store.link_sleeper("cog-1", "s-1", "alexnovak02")
+    record = store.unlink_sleeper("cog-1")
+
+    for field in ("sleeperUserId", "sleeperUsername", "sleeperAvatar"):
+        assert field not in record

@@ -165,13 +165,24 @@ def link_sleeper(
 
 
 def unlink_sleeper(user_id: str) -> dict[str, Any]:
-    """Detach the Sleeper account, leaving the rest of the record intact."""
+    """Detach the Sleeper account, leaving the rest of the record intact.
+
+    A displayName we seeded from the handle goes with it. This is the last
+    moment we can tell a derived name from a chosen one -- once the handle is
+    gone, "alexnovak02" is just a string, and link_sleeper has nothing to
+    compare it against. Skipping this left an account linked to
+    nobody123456 still displaying as alexnovak02.
+    """
+    current = get_user(user_id) or {}
+    removes = ["sleeperUserId", "sleeperUsername", "sleeperAvatar"]
+    if current.get("displayName") == current.get("sleeperUsername"):
+        removes.append("displayName")
+
     try:
         response = _table().update_item(
             Key={"userId": user_id},
             UpdateExpression=(
-                "REMOVE sleeperUserId, sleeperUsername, sleeperAvatar "
-                "SET updatedAt = :t"
+                f"REMOVE {', '.join(removes)} SET updatedAt = :t"
             ),
             ExpressionAttributeValues={":t": get_iso_timestamp()},
             ReturnValues="ALL_NEW",
