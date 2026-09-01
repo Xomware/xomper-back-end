@@ -65,19 +65,13 @@ def patched(monkeypatch: pytest.MonkeyPatch):
         return (len(tasks), 0)
 
     monkeypatch.setattr(h, "get_cron_setting", _get_cron_setting)
-    # The handler now asks notification_audience for the whole work list
-    # rather than reading the Supabase whitelist itself.
     monkeypatch.setattr(
-        h.notification_audience,
-        "jobs",
-        lambda: [
-            h.notification_audience.NotificationJob(
-                league_id="L1",
-                league_name="Test",
-                source="whitelist",
-                recipients=list(state["whitelisted"]),
-            )
-        ],
+        h,
+        "get_active_whitelisted_league",
+        lambda: {"league_id": "L1", "league_name": "Test"},
+    )
+    monkeypatch.setattr(
+        h, "get_active_whitelisted_users", lambda: list(state["whitelisted"])
     )
     monkeypatch.setattr(
         h, "get_sleeper_league_rosters", lambda lid: _rosters_with_actionable_lineups()
@@ -142,96 +136,3 @@ class TestDefaultPassthrough:
         assert ADMIN_ID in recipients
         assert "user-1" in recipients
         assert "user-2" in recipients
-
-
-class TestMultiLeague:
-    """The cron used to run for exactly one league: the single active
-    whitelist row. It now runs for every league the audience resolver
-    returns."""
-
-    def _jobs(self, h, state, jobs):
-        return lambda: [
-            h.notification_audience.NotificationJob(**j) for j in jobs
-        ]
-
-    def test_runs_for_every_league_it_is_given(self, patched, monkeypatch) -> None:
-        from lambdas.notif_lineup_not_set import handler as h
-
-        seen = []
-        monkeypatch.setattr(
-            h,
-            "get_sleeper_league_rosters",
-            lambda lid: seen.append(lid) or _rosters_with_actionable_lineups(),
-        )
-        monkeypatch.setattr(
-            h.notification_audience,
-            "jobs",
-            self._jobs(h, patched, [
-                {"league_id": "L1", "league_name": "One", "source": "whitelist",
-                 "recipients": list(patched["whitelisted"])},
-                {"league_id": "L2", "league_name": "Two", "source": "follows",
-                 "recipients": list(patched["whitelisted"])},
-            ]),
-        )
-
-        body = h.handler({}, context=None)["body"]
-
-        assert seen == ["L1", "L2"]
-        assert body["leagues"] == ["L1", "L2"]
-
-    def test_a_league_with_no_reachable_recipient_costs_no_sleeper_call(
-        self, patched, monkeypatch
-    ) -> None:
-        from lambdas.notif_lineup_not_set import handler as h
-
-        seen = []
-        monkeypatch.setattr(
-            h,
-            "get_sleeper_league_rosters",
-            lambda lid: seen.append(lid) or _rosters_with_actionable_lineups(),
-        )
-        monkeypatch.setattr(
-            h.notification_audience,
-            "jobs",
-            self._jobs(h, patched, [
-                {"league_id": "L1", "league_name": "One", "source": "follows",
-                 "recipients": []},
-                {"league_id": "L2", "league_name": "Two", "source": "follows",
-                 "recipients": list(patched["whitelisted"])},
-            ]),
-        )
-
-        h.handler({}, context=None)
-
-        # Fetching rosters for a league with nobody to tell is the exact spend
-        # the follow table exists to avoid.
-        assert seen == ["L2"]
-
-    def test_no_leagues_at_all_short_circuits(self, patched, monkeypatch) -> None:
-        from lambdas.notif_lineup_not_set import handler as h
-
-        monkeypatch.setattr(h.notification_audience, "jobs", lambda: [])
-
-        body = h.handler({}, context=None)["body"]
-
-        assert body["reason"] == "no league to notify"
-        assert patched["send_push_calls"] == []
-
-    def test_each_league_is_named_in_its_own_email(self, patched, monkeypatch) -> None:
-        from lambdas.notif_lineup_not_set import handler as h
-
-        monkeypatch.setattr(
-            h.notification_audience,
-            "jobs",
-            self._jobs(h, patched, [
-                {"league_id": "L1", "league_name": "Sunday Money", "source": "follows",
-                 "recipients": list(patched["whitelisted"])},
-            ]),
-        )
-
-        h.handler({}, context=None)
-        subjects = [task[1] for task in patched["send_email_call"]]
-
-        # One cron run now spans leagues, so a subject naming the wrong one
-        # would be actively confusing rather than merely wrong.
-        assert all("Sunday Money" in s for s in subjects)

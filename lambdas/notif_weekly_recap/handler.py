@@ -25,7 +25,10 @@ from lambdas.common.season_guard import offseason_skip
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
-from lambdas.common import notification_audience
+from lambdas.common.supabase_helper import (
+    get_active_whitelisted_league,
+    get_active_whitelisted_users,
+)
 from lambdas.common.sleeper_helper import (
     get_sleeper_league,
     get_sleeper_league_rosters,
@@ -70,11 +73,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
     test_mode = bool(cron_setting["test_mode"])
 
-    # 1. Resolve the leagues to recap
-    jobs = notification_audience.jobs()
-    if not jobs:
-        log.warning("No league to notify. Skipping.")
-        return success_response({"sent": 0, "reason": "no league to notify"}, is_api=False)
+    # 1. Resolve active league
+    league_row = get_active_whitelisted_league()
+    if not league_row:
+        log.warning("No active whitelisted league configured. Skipping.")
+        return success_response({"sent": 0, "reason": "no active league"}, is_api=False)
+
+    league_id = league_row["league_id"]
+    league_name = league_row.get("league_name", "League")
 
     # 2. Determine the week to recap. Override via event["week"] for
     #    backfill / testing; otherwise use the just-completed NFL week.
@@ -92,69 +98,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     target_week = int(week_override) if week_override else max(current_week - 1, 1)
 
-    push_sent = 0
-    email_sent = 0
-    email_failed = 0
-    leagues_done = []
+    log.info(f"Recapping week {target_week} for league {league_id} ({league_name})")
 
-    for job in jobs:
-        p, e, f = _recap_league(job, target_week, test_mode)
-        if p or e or f:
-            leagues_done.append(job.league_id)
-        push_sent += p
-        email_sent += e
-        email_failed += f
-
-    log.info(
-        f"Weekly recap: {push_sent} push, {email_sent} email "
-        f"({email_failed} email failed) for week {target_week} across "
-        f"{len(leagues_done)} league(s)."
-    )
-    return success_response(
-        {
-            "push_sent": push_sent,
-            "email_sent": email_sent,
-            "email_failed": email_failed,
-            "week": target_week,
-            "leagues": leagues_done,
-        },
-        is_api=False,
-    )
-
-
-
-def _recap_league(
-    job: notification_audience.NotificationJob,
-    target_week: int,
-    test_mode: bool,
-) -> tuple[int, int, int]:
-    """Recap one league. Returns (push_sent, email_sent, email_failed).
-
-    Extracted rather than wrapping the handler body in a loop: this is
-    ~200 lines with three nested closures over league-scoped indexes, and
-    a reindent that deep is where a counter or an early return quietly
-    changes meaning.
-    """
-    league_id = job.league_id
-    league_name = job.league_name
-
-    recipients = job.recipients
-    if test_mode:
-        recipients = filter_to_admin_only(recipients)
-        log.info(
-            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
-            f"admin only ({len(recipients)} user(s))"
-        )
-    sleeper_id_to_user = {
-        w.get("sleeper_user_id"): w
-        for w in recipients
-        if w.get("sleeper_user_id")
-    }
-    # Nothing to send, so skip the Sleeper fetches entirely.
-    if not sleeper_id_to_user:
-        return (0, 0, 0)
-
-    log.info(f"Recapping week {target_week} for league {league_id} ({league_name}) [{job.source}]")
     # 3. Pull rosters, users, matchups
     rosters = get_sleeper_league_rosters(league_id)
     users = get_sleeper_league_users(league_id)
@@ -182,11 +127,25 @@ def _recap_league(
     # 6. Compute league-wide stats: highest single-team score
     if not matchups:
         log.warning(f"No matchup data for week {target_week}. Skipping.")
-        return (0, 0, 0)
+        return success_response({"sent": 0, "reason": "no matchup data"}, is_api=False)
 
     top_entry = max(matchups, key=lambda m: m.get("points", 0.0))
     top_team_name = team_name_for_roster(top_entry["roster_id"])
     top_pts = float(top_entry.get("points", 0.0))
+
+    # 7. Resolve recipients from Supabase (sleeper_user_id → push + email)
+    whitelisted = get_active_whitelisted_users()
+    if test_mode:
+        whitelisted = filter_to_admin_only(whitelisted)
+        log.info(
+            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
+            f"admin only ({len(whitelisted)} user(s))"
+        )
+    sleeper_id_to_user = {
+        w.get("sleeper_user_id"): w
+        for w in whitelisted
+        if w.get("sleeper_user_id")
+    }
 
     # Pre-compute the league-wide standings table once so each manager's
     # email gets the same sorted score listing.
@@ -345,7 +304,21 @@ def _recap_league(
     if email_tasks:
         email_sent, email_failed = send_emails_concurrently(email_tasks)
 
-    return push_sent, email_sent, email_failed
+    log.info(
+        f"Weekly recap: {push_sent} push, {email_sent} email "
+        f"({email_failed} email failed) for week {target_week}."
+    )
+    return success_response(
+        {
+            "push_sent": push_sent,
+            "email_sent": email_sent,
+            "email_failed": email_failed,
+            "week": target_week,
+            "league_id": league_id,
+        },
+        is_api=False,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Section payload builders

@@ -17,7 +17,10 @@ from lambdas.common.season_guard import offseason_skip
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
-from lambdas.common import notification_audience
+from lambdas.common.supabase_helper import (
+    get_active_whitelisted_league,
+    get_active_whitelisted_users,
+)
 from lambdas.common.sleeper_helper import (
     get_sleeper_league_rosters,
     get_sleeper_league_users,
@@ -61,9 +64,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
     test_mode = bool(cron_setting["test_mode"])
 
-    jobs = notification_audience.jobs()
-    if not jobs:
-        return success_response({"sent": 0, "reason": "no league to notify"}, is_api=False)
+    league_row = get_active_whitelisted_league()
+    if not league_row:
+        return success_response({"sent": 0, "reason": "no active league"}, is_api=False)
+
+    league_id = league_row["league_id"]
+    league_name = league_row.get("league_name", "League")
 
     nfl_state = get_nfl_state()
     week_override = event.get("week") if isinstance(event, dict) else None
@@ -75,98 +81,86 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     week = int(week_override if week_override else nfl_state.get("week", 1))
 
-    # Players are league-independent, so this is fetched once rather than
-    # per league -- it is the largest payload Sleeper serves.
+    log.info(f"Auditing lineups for week {week} in league {league_id}")
+
+    rosters = get_sleeper_league_rosters(league_id)
+    users = get_sleeper_league_users(league_id)
     players = fetch_nfl_players()
+
+    user_by_id = {u["user_id"]: u for u in users}
+
+    whitelisted = get_active_whitelisted_users()
+    if test_mode:
+        whitelisted = filter_to_admin_only(whitelisted)
+        log.info(
+            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
+            f"admin only ({len(whitelisted)} user(s))"
+        )
+    sleeper_id_to_user = {
+        w.get("sleeper_user_id"): w
+        for w in whitelisted
+        if w.get("sleeper_user_id")
+    }
 
     push_sent = 0
     email_tasks: list[tuple[str, str, str, str]] = []
-    leagues_done = []
 
-    for job in jobs:
-        league_id = job.league_id
-        league_name = job.league_name
-        log.info(
-            f"Auditing lineups for week {week} in league {league_id} "
-            f"({job.source})"
-        )
-
-        recipients = job.recipients
-        if test_mode:
-            recipients = filter_to_admin_only(recipients)
-            log.info(
-                f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
-                f"admin only ({len(recipients)} user(s))"
-            )
-        sleeper_id_to_user = {
-            w.get("sleeper_user_id"): w
-            for w in recipients
-            if w.get("sleeper_user_id")
-        }
-        if not sleeper_id_to_user:
+    for roster in rosters:
+        owner_id = roster.get("owner_id")
+        if not owner_id or owner_id not in sleeper_id_to_user:
             continue
 
-        rosters = get_sleeper_league_rosters(league_id)
-        users = get_sleeper_league_users(league_id)
-        user_by_id = {u["user_id"]: u for u in users}
-        leagues_done.append(league_id)
-
-        for roster in rosters:
-            owner_id = roster.get("owner_id")
-            if not owner_id or owner_id not in sleeper_id_to_user:
+        starters = roster.get("starters") or []
+        issue_count = 0
+        for player_id in starters:
+            if not player_id or player_id == "0":
+                issue_count += 1
                 continue
-
-            starters = roster.get("starters") or []
-            issue_count = 0
-            for player_id in starters:
-                if not player_id or player_id == "0":
-                    issue_count += 1
-                    continue
-                player = players.get(player_id) or {}
-                injury_status = player.get("injury_status") or ""
-                if injury_status in ACTIONABLE_INJURY_STATUSES:
-                    issue_count += 1
-                    continue
-                # Bye-week detection requires a separate Sleeper endpoint
-                # (`/players/nfl/research/regular/{season}/{week}`); deferred
-                # to v2. Empty + OUT cover the common cases.
-
-            if issue_count == 0:
+            player = players.get(player_id) or {}
+            injury_status = player.get("injury_status") or ""
+            if injury_status in ACTIONABLE_INJURY_STATUSES:
+                issue_count += 1
                 continue
+            # Bye-week detection requires a separate Sleeper endpoint
+            # (`/players/nfl/research/regular/{season}/{week}`); deferred
+            # to v2. Empty + OUT cover the common cases.
 
-            # Push leg
-            title, body, category, data = lineup_not_set_push(
-                league_name=league_name,
-                issue_count=issue_count,
-            )
-            send_push_to_users([owner_id], title, body, category, data)
-            push_sent += 1
+        if issue_count == 0:
+            continue
 
-            # Email leg — opt-in via the user having an email on file.
-            wl_user = sleeper_id_to_user[owner_id]
-            email = wl_user.get("email")
-            if not email:
-                continue
-            manager_name = (
-                wl_user.get("display_name")
-                or user_by_id.get(owner_id, {}).get("display_name")
-                or wl_user.get("sleeper_username")
-                or "Manager"
-            )
-            subject = f"Set your {league_name} lineup — Week {week}"
-            html = generate_lineup_not_set_email(
-                manager_name=manager_name,
-                league_name=league_name,
-                issue_count=issue_count,
-                week=week,
-            )
-            text = generate_lineup_not_set_email_plain_text(
-                manager_name=manager_name,
-                league_name=league_name,
-                issue_count=issue_count,
-                week=week,
-            )
-            email_tasks.append((email, subject, html, text))
+        # Push leg
+        title, body, category, data = lineup_not_set_push(
+            league_name=league_name,
+            issue_count=issue_count,
+        )
+        send_push_to_users([owner_id], title, body, category, data)
+        push_sent += 1
+
+        # Email leg — opt-in via the user having an email on file.
+        wl_user = sleeper_id_to_user[owner_id]
+        email = wl_user.get("email")
+        if not email:
+            continue
+        manager_name = (
+            wl_user.get("display_name")
+            or user_by_id.get(owner_id, {}).get("display_name")
+            or wl_user.get("sleeper_username")
+            or "Manager"
+        )
+        subject = f"Set your {league_name} lineup — Week {week}"
+        html = generate_lineup_not_set_email(
+            manager_name=manager_name,
+            league_name=league_name,
+            issue_count=issue_count,
+            week=week,
+        )
+        text = generate_lineup_not_set_email_plain_text(
+            manager_name=manager_name,
+            league_name=league_name,
+            issue_count=issue_count,
+            week=week,
+        )
+        email_tasks.append((email, subject, html, text))
 
     email_sent, email_failed = (0, 0)
     if email_tasks:
@@ -182,7 +176,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "email_sent": email_sent,
             "email_failed": email_failed,
             "week": week,
-            "leagues": leagues_done,
+            "league_id": league_id,
         },
         is_api=False,
     )
