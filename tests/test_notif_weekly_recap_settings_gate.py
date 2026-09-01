@@ -102,21 +102,10 @@ def patched(monkeypatch: pytest.MonkeyPatch):
         return (len(tasks), 0)
 
     monkeypatch.setattr(h, "get_cron_setting", _get_cron_setting)
-    # The handler asks notification_audience for the work list now.
-    def _jobs():
-        row = state["league_row"]
-        if not row:
-            return []
-        return [
-            h.notification_audience.NotificationJob(
-                league_id=row["league_id"],
-                league_name=row.get("league_name", "League"),
-                source="whitelist",
-                recipients=list(state["whitelisted"]),
-            )
-        ]
-
-    monkeypatch.setattr(h.notification_audience, "jobs", _jobs)
+    monkeypatch.setattr(h, "get_active_whitelisted_league", lambda: state["league_row"])
+    monkeypatch.setattr(
+        h, "get_active_whitelisted_users", lambda: list(state["whitelisted"])
+    )
     monkeypatch.setattr(h, "get_sleeper_league_rosters", lambda lid: state["rosters"])
     monkeypatch.setattr(h, "get_sleeper_league_users", lambda lid: state["users"])
     monkeypatch.setattr(
@@ -187,109 +176,3 @@ class TestDefaultPassthrough:
         assert "user-1" in recipients
         assert "user-2" in recipients
         assert "user-3" in recipients
-
-
-class TestMultiLeague:
-    """The recap body moved into _recap_league so the handler can loop.
-
-    A ~200-line reindent is where a counter or an early return quietly
-    changes meaning, so these pin the aggregation rather than the prose.
-    """
-
-    def _jobs(self, h, ids, recipients):
-        return lambda: [
-            h.notification_audience.NotificationJob(
-                league_id=lid, league_name=f"L {lid}", source="follows",
-                recipients=list(recipients),
-            )
-            for lid in ids
-        ]
-
-    def test_recaps_every_league_it_is_given(self, patched, monkeypatch) -> None:
-        from lambdas.notif_weekly_recap import handler as h
-
-        seen = []
-        monkeypatch.setattr(
-            h, "get_sleeper_league_matchups",
-            lambda lid, week: seen.append(lid) or patched["matchups"],
-        )
-        monkeypatch.setattr(
-            h.notification_audience, "jobs",
-            self._jobs(h, ["L1", "L2"], patched["whitelisted"]),
-        )
-
-        body = h.handler({}, context=None)["body"]
-
-        assert seen == ["L1", "L2"]
-        assert sorted(body["leagues"]) == ["L1", "L2"]
-
-    def test_counts_accumulate_across_leagues(self, patched, monkeypatch) -> None:
-        from lambdas.notif_weekly_recap import handler as h
-
-        monkeypatch.setattr(
-            h.notification_audience, "jobs",
-            self._jobs(h, ["L1"], patched["whitelisted"]),
-        )
-        one = h.handler({}, context=None)["body"]["push_sent"]
-
-        monkeypatch.setattr(
-            h.notification_audience, "jobs",
-            self._jobs(h, ["L1", "L2"], patched["whitelisted"]),
-        )
-        two = h.handler({}, context=None)["body"]["push_sent"]
-
-        # Counters live in the handler and are summed from the helper's
-        # return; initialising them inside the loop would report only the
-        # last league.
-        assert one > 0
-        assert two == one * 2
-
-    def test_a_league_with_nobody_to_tell_costs_no_sleeper_call(
-        self, patched, monkeypatch
-    ) -> None:
-        from lambdas.notif_weekly_recap import handler as h
-
-        seen = []
-        monkeypatch.setattr(
-            h, "get_sleeper_league_matchups",
-            lambda lid, week: seen.append(lid) or patched["matchups"],
-        )
-        monkeypatch.setattr(
-            h.notification_audience, "jobs",
-            lambda: [
-                h.notification_audience.NotificationJob(
-                    league_id="L1", league_name="One", source="follows", recipients=[],
-                ),
-                h.notification_audience.NotificationJob(
-                    league_id="L2", league_name="Two", source="follows",
-                    recipients=list(patched["whitelisted"]),
-                ),
-            ],
-        )
-
-        h.handler({}, context=None)
-
-        assert seen == ["L2"]
-
-    def test_a_league_that_sent_nothing_is_not_reported_as_done(
-        self, patched, monkeypatch
-    ) -> None:
-        from lambdas.notif_weekly_recap import handler as h
-
-        monkeypatch.setattr(
-            h.notification_audience, "jobs",
-            lambda: [
-                h.notification_audience.NotificationJob(
-                    league_id="L1", league_name="One", source="follows", recipients=[],
-                ),
-            ],
-        )
-
-        assert h.handler({}, context=None)["body"]["leagues"] == []
-
-    def test_no_leagues_short_circuits(self, patched, monkeypatch) -> None:
-        from lambdas.notif_weekly_recap import handler as h
-
-        monkeypatch.setattr(h.notification_audience, "jobs", lambda: [])
-
-        assert h.handler({}, context=None)["body"]["reason"] == "no league to notify"
