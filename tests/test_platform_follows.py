@@ -165,8 +165,8 @@ def test_all_followed_leagues_groups_followers(follows_table, store):
     leagues = store.all_followed_leagues()
 
     assert sorted(leagues) == ["L1", "L2"]
-    assert sorted(leagues["L1"]) == ["cog-1", "cog-2"]
-    assert leagues["L2"] == ["cog-2"]
+    assert sorted(leagues["L1"]["followers"]) == ["cog-1", "cog-2"]
+    assert leagues["L2"]["followers"] == ["cog-2"]
 
 
 def test_all_followed_leagues_drops_an_unfollowed_league(follows_table, store):
@@ -183,8 +183,23 @@ def test_all_followed_leagues_keeps_a_league_one_person_left(follows_table, stor
     store.follow("cog-2", "L1")
     store.unfollow("cog-1", "L1")
 
-    assert store.all_followed_leagues() == {"L1": ["cog-2"]}
+    assert store.all_followed_leagues() == {"L1": {"name": "", "followers": ["cog-2"]}}
 
 
 def test_all_followed_leagues_is_empty_when_nobody_follows_anything(follows_table, store):
     assert store.all_followed_leagues() == {}
+
+
+def test_all_followed_leagues_carries_the_league_name(follows_table, store):
+    store.follow("cog-1", "L1", name="Charlotte Dynasty")
+
+    assert store.all_followed_leagues()["L1"]["name"] == "Charlotte Dynasty"
+
+
+def test_a_blank_name_does_not_win_over_a_real_one(follows_table, store):
+    store.follow("cog-1", "L1")
+    store.follow("cog-2", "L1", name="Charlotte Dynasty")
+
+    # Rows are written per follower, and an older follow may predate the
+    # denormalised name.
+    assert store.all_followed_leagues()["L1"]["name"] == "Charlotte Dynasty"

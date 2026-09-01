@@ -22,6 +22,10 @@ from typing import Any
 
 from lambdas.common import platform_follows, platform_users
 from lambdas.common.logger import get_logger
+from lambdas.common.supabase_helper import (
+    get_active_whitelisted_league,
+    get_active_whitelisted_users,
+)
 
 log = get_logger(__name__)
 
@@ -81,7 +85,8 @@ def audiences() -> list[Audience]:
     resolved: dict[str, Recipient | None] = {}
     out = []
 
-    for league_id, user_ids in platform_follows.all_followed_leagues().items():
+    for league_id, entry in platform_follows.all_followed_leagues().items():
+        user_ids = entry["followers"]
         recipients = []
         for user_id in user_ids:
             # One league's followers overlap the next; resolving each user
@@ -104,3 +109,77 @@ def audience_for(league_id: str) -> Audience | None:
     """The audience for one league, or None if nobody reachable follows it."""
     recipients = [r for r in map(_recipient, platform_follows.followers_of(league_id)) if r]
     return Audience(league_id=league_id, recipients=recipients) if recipients else None
+
+
+@dataclass
+class NotificationJob:
+    """One league a scheduled job should run for, and who to tell.
+
+    `recipients` are whitelist-shaped rows -- `email`, `display_name`,
+    `sleeper_user_id` -- whichever source they came from. That is what every
+    notification lambda already indexes by `sleeper_user_id` to match a roster
+    owner, and what `filter_to_admin_only` expects, so adopting this is a
+    small diff at each call site rather than a rewrite.
+    """
+
+    league_id: str
+    league_name: str
+    source: str
+    recipients: list[dict[str, Any]]
+
+
+def _as_whitelist_row(recipient: Recipient) -> dict[str, Any]:
+    return {
+        "email": recipient.email,
+        "display_name": recipient.display_name,
+        "sleeper_user_id": recipient.sleeper_user_id,
+        "user_id": recipient.user_id,
+    }
+
+
+def jobs() -> list[NotificationJob]:
+    """Every league worth notifying about, from both sources.
+
+    The whitelisted league keeps its own recipient list. Its members were
+    never asked to sign up for Xomper, and switching it to followers mid-season
+    would silently stop the email they already get.
+
+    Every *other* followed league is driven by the follow table. That is the
+    multi-league half, and it costs nothing for leagues nobody follows.
+
+    A league in both is emitted once, from the whitelist, so nobody is mailed
+    twice about the same league.
+    """
+    out: list[NotificationJob] = []
+
+    whitelist_league = get_active_whitelisted_league()
+    whitelisted_id = str((whitelist_league or {}).get("league_id") or "")
+    if whitelist_league:
+        out.append(
+            NotificationJob(
+                league_id=whitelisted_id,
+                league_name=str(whitelist_league.get("league_name") or "League"),
+                source="whitelist",
+                recipients=get_active_whitelisted_users(),
+            )
+        )
+
+    # Hoisted: this is a table scan, and calling it inside the loop made the
+    # cost scale with the number of leagues instead of being paid once.
+    followed = platform_follows.all_followed_leagues()
+
+    for audience in audiences():
+        if audience.league_id == whitelisted_id:
+            continue
+        entry = followed.get(audience.league_id, {})
+        out.append(
+            NotificationJob(
+                league_id=audience.league_id,
+                league_name=str(entry.get("name") or "League"),
+                source="follows",
+                recipients=[_as_whitelist_row(r) for r in audience.recipients],
+            )
+        )
+
+    log.info(f"audience: {len(out)} notification job(s)")
+    return out
