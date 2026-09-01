@@ -59,9 +59,26 @@ def patched(monkeypatch: pytest.MonkeyPatch):
     # The worldcup handler does a LOT of helper invocation — stub the
     # internals it uses so the test focuses only on the gate logic.
     monkeypatch.setattr(h, "get_cron_setting", _get_cron_setting)
-    monkeypatch.setattr(h, "get_active_whitelisted_league", lambda: state["league_row"])
+    # The handler asks notification_audience for the work list now, and
+    # eligibility comes from Sleeper rather than whitelist columns.
+    def _jobs():
+        row = state["league_row"]
+        if not row:
+            return []
+        return [
+            h.notification_audience.NotificationJob(
+                league_id=row["league_id"],
+                league_name=row.get("league_name", "League"),
+                source="whitelist",
+                recipients=list(state["whitelisted"]),
+            )
+        ]
+
+    monkeypatch.setattr(h.notification_audience, "jobs", _jobs)
     monkeypatch.setattr(
-        h, "get_active_whitelisted_users", lambda: list(state["whitelisted"])
+        h,
+        "get_sleeper_league",
+        lambda lid: {"settings": {"type": 2, "taxi_slots": 2}},
     )
     monkeypatch.setattr(h, "send_push_to_users", _send_push_to_users)
 
@@ -124,3 +141,86 @@ class TestDefaultPassthrough:
         }
         assert ADMIN_ID in recipients
         assert "user-1" in recipients
+
+
+class TestEligibilityAndFanOut:
+    """This cron walks the whole league chain and every regular-season week,
+    so what it declines to run for matters more than what it runs."""
+
+    def _job(self, h, lid, recipients):
+        return h.notification_audience.NotificationJob(
+            league_id=lid, league_name=lid, source="follows",
+            recipients=list(recipients),
+        )
+
+    def test_a_redraft_league_is_not_eligible(self, patched, monkeypatch) -> None:
+        from lambdas.notif_worldcup_movement import handler as h
+
+        walked = []
+        monkeypatch.setattr(
+            h, "get_league_chain",
+            lambda head_id, fetch_league_fn=None: walked.append(head_id) or [],
+        )
+        # type 0 is redraft; the World Cup format is dynasty-only.
+        monkeypatch.setattr(
+            h, "get_sleeper_league",
+            lambda lid: {"settings": {"type": 0, "taxi_slots": 2}},
+        )
+        monkeypatch.setattr(
+            h.notification_audience, "jobs",
+            lambda: [self._job(h, "L1", patched["whitelisted"])],
+        )
+
+        h.handler({}, context=None)
+
+        assert walked == []
+
+    def test_a_dynasty_league_without_taxi_is_not_eligible(
+        self, patched, monkeypatch
+    ) -> None:
+        from lambdas.notif_worldcup_movement import handler as h
+
+        walked = []
+        monkeypatch.setattr(
+            h, "get_league_chain",
+            lambda head_id, fetch_league_fn=None: walked.append(head_id) or [],
+        )
+        monkeypatch.setattr(
+            h, "get_sleeper_league",
+            lambda lid: {"settings": {"type": 2, "taxi_slots": 0}},
+        )
+        monkeypatch.setattr(
+            h.notification_audience, "jobs",
+            lambda: [self._job(h, "L1", patched["whitelisted"])],
+        )
+
+        h.handler({}, context=None)
+
+        assert walked == []
+
+    def test_a_league_with_no_recipients_is_never_even_looked_up(
+        self, patched, monkeypatch
+    ) -> None:
+        from lambdas.notif_worldcup_movement import handler as h
+
+        looked_up = []
+        monkeypatch.setattr(
+            h, "get_sleeper_league",
+            lambda lid: looked_up.append(lid) or {"settings": {"type": 2, "taxi_slots": 2}},
+        )
+        monkeypatch.setattr(
+            h.notification_audience, "jobs", lambda: [self._job(h, "L1", [])],
+        )
+
+        h.handler({}, context=None)
+
+        # The recipient check precedes the eligibility lookup, so an
+        # unwatched league costs zero Sleeper calls.
+        assert looked_up == []
+
+    def test_no_leagues_short_circuits(self, patched, monkeypatch) -> None:
+        from lambdas.notif_worldcup_movement import handler as h
+
+        monkeypatch.setattr(h.notification_audience, "jobs", lambda: [])
+
+        assert h.handler({}, context=None)["body"]["reason"] == "no league to notify"

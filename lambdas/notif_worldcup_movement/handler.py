@@ -40,10 +40,7 @@ from lambdas.common.season_guard import offseason_skip
 from lambdas.common.logger import get_logger
 from lambdas.common.errors import handle_errors
 from lambdas.common.utility_helpers import success_response
-from lambdas.common.supabase_helper import (
-    get_active_whitelisted_league,
-    get_active_whitelisted_users,
-)
+from lambdas.common import notification_audience
 from lambdas.common.sleeper_helper import (
     get_sleeper_league,
     get_sleeper_league_rosters,
@@ -95,13 +92,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         )
     test_mode = bool(cron_setting["test_mode"])
 
-    league_row = get_active_whitelisted_league()
-    if not league_row:
-        return success_response({"sent": 0, "reason": "no active league"}, is_api=False)
-
-    if not league_row.get("has_taxi") or not league_row.get("is_dynasty"):
-        log.info("Active league not World-Cup eligible (needs has_taxi + is_dynasty). Skipping.")
-        return success_response({"sent": 0, "reason": "not world-cup eligible"}, is_api=False)
+    jobs = notification_audience.jobs()
+    if not jobs:
+        return success_response({"sent": 0, "reason": "no league to notify"}, is_api=False)
 
     # Offseason guard — standings don't move once the season ends. A
     # manual week/games_remaining override bypasses for backfill/testing.
@@ -112,7 +105,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if skip:
         return skip
 
-    head_league_id = league_row["league_id"]
     games_remaining = int(
         event.get("games_remaining")
         if isinstance(event, dict) and event.get("games_remaining") is not None
@@ -124,93 +116,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         else 0  # 0 = pre-season placeholder; production cron passes the current week
     )
 
-    log.info(
-        f"Computing World Cup standings for league {head_league_id}, "
-        f"week={week}, games_remaining={games_remaining}"
-    )
-
-    # Step 1: walk the chain
-    chain = get_league_chain(head_league_id, fetch_league_fn=get_sleeper_league)
-    if not chain:
-        return success_response({"sent": 0, "reason": "empty chain"}, is_api=False)
-    head_league = chain[0]
-    season = head_league.get("season", "")
-    division_name_map = division_name_map_from_league(head_league)
-
-    # Step 2: build matchup records from each league in the chain
-    matchups = _gather_chain_matchups(chain)
-
-    # Steps 3-5: aggregate + clinch
-    standings = compute_division_standings(matchups, division_name_map)
-    for _div_id, _div_name, teams in standings:
-        clinch_for_division(teams, games_remaining=games_remaining)
-
-    current = status_map_from_standings(standings)
-
-    # Step 6: diff against previous snapshot
-    prev = _read_snapshot(head_league_id, season, max(week - 1, 0))
-    transitions = diff_snapshots(current, prev)
-
-    # Step 7: persist current snapshot
-    _write_snapshot(head_league_id, season, week, current)
-
-    if not transitions:
-        log.info("No transitions this week. No pushes sent.")
-        return success_response(
-            {"sent": 0, "transitions": 0, "league_id": head_league_id, "week": week},
-            is_api=False,
-        )
-
-    # Resolve sleeper_user_id → push eligibility through whitelisted_users
-    whitelisted = get_active_whitelisted_users()
-    if test_mode:
-        whitelisted = filter_to_admin_only(whitelisted)
-        log.info(
-            f"{LAMBDA_CRON_KEY} test_mode=true — restricting recipients to "
-            f"admin only ({len(whitelisted)} user(s))"
-        )
-    eligible_user_ids = {
-        w.get("sleeper_user_id")
-        for w in whitelisted
-        if w.get("sleeper_user_id")
-    }
-
     sent = 0
-    for event_dict in transitions:
-        user_id = event_dict["user_id"]
-        if user_id not in eligible_user_ids:
-            continue
+    transitions_seen = 0
+    leagues_done = []
 
-        division_name = division_name_map.get(
-            event_dict.get("division", 0),
-            f"Division {event_dict.get('division', 0)}",
-        )
+    for job in jobs:
+        s, t = _worldcup_for_league(job, week, games_remaining, test_mode)
+        if t:
+            leagues_done.append(job.league_id)
+        sent += s
+        transitions_seen += t
 
-        if event_dict["kind"] == "status":
-            to_status = event_dict["to"]
-            if to_status == CLINCHED:
-                title, body, category, data = worldcup_clinched_push(division_name)
-            elif to_status == ELIMINATED:
-                title, body, category, data = worldcup_eliminated_push(division_name)
-            else:
-                # alive ← clinched/eliminated reversal — no push (rare,
-                # only happens on a backfill / replay; managers don't
-                # want a "JK you're alive again" alert).
-                continue
-        else:  # line crossing
-            crossed_into = event_dict["direction"] == "in"
-            title, body, category, data = worldcup_line_moved_push(division_name, crossed_into)
-
-        send_push_to_users([user_id], title, body, category, data)
-        sent += 1
-
-    log.info(f"World Cup movement: {sent} pushes sent across {len(transitions)} transitions.")
+    log.info(
+        f"World Cup movement: {sent} pushes across {transitions_seen} "
+        f"transitions in {len(leagues_done)} league(s)."
+    )
     return success_response(
         {
             "sent": sent,
-            "transitions": len(transitions),
-            "league_id": head_league_id,
-            "season": season,
+            "transitions": transitions_seen,
+            "leagues": leagues_done,
             "week": week,
             "games_remaining": games_remaining,
         },
@@ -343,3 +268,99 @@ def _write_snapshot(
         )
     except Exception as e:
         log.error(f"Snapshot write failed: {e}")
+
+
+def _worldcup_for_league(
+    job: notification_audience.NotificationJob,
+    week: int,
+    games_remaining: int,
+    test_mode: bool,
+) -> tuple[int, int]:
+    """Run the World Cup diff for one league. Returns (sent, transitions).
+
+    Eligibility is read from Sleeper rather than the whitelist row's
+    has_taxi / is_dynasty columns, which only ever existed for the one
+    configured league and were maintained by hand.
+
+    This walks the whole league chain and every regular-season week, so
+    the recipient check comes first: an ineligible or unwatched league
+    must not pay for the walk.
+    """
+    head_league_id = job.league_id
+
+    recipients = job.recipients
+    if test_mode:
+        recipients = filter_to_admin_only(recipients)
+    eligible_user_ids = {
+        w.get("sleeper_user_id") for w in recipients if w.get("sleeper_user_id")
+    }
+    if not eligible_user_ids:
+        return (0, 0)
+
+    head = get_sleeper_league(head_league_id) or {}
+    settings = head.get("settings") or {}
+    # Sleeper: type 2 is dynasty; taxi_slots 0 means no taxi squad.
+    if int(settings.get("type", 0)) != 2 or int(settings.get("taxi_slots", 0)) <= 0:
+        log.info(f"League {head_league_id} is not World-Cup eligible. Skipping.")
+        return (0, 0)
+
+    # Step 1: walk the chain
+    chain = get_league_chain(head_league_id, fetch_league_fn=get_sleeper_league)
+    if not chain:
+        return (0, 0)
+    head_league = chain[0]
+    season = head_league.get("season", "")
+    division_name_map = division_name_map_from_league(head_league)
+
+    # Step 2: build matchup records from each league in the chain
+    matchups = _gather_chain_matchups(chain)
+
+    # Steps 3-5: aggregate + clinch
+    standings = compute_division_standings(matchups, division_name_map)
+    for _div_id, _div_name, teams in standings:
+        clinch_for_division(teams, games_remaining=games_remaining)
+
+    current = status_map_from_standings(standings)
+
+    # Step 6: diff against previous snapshot
+    prev = _read_snapshot(head_league_id, season, max(week - 1, 0))
+    transitions = diff_snapshots(current, prev)
+
+    # Step 7: persist current snapshot
+    _write_snapshot(head_league_id, season, week, current)
+
+    if not transitions:
+        log.info("No transitions this week. No pushes sent.")
+        return (0, 0)
+
+    sent = 0
+    for event_dict in transitions:
+        user_id = event_dict["user_id"]
+        if user_id not in eligible_user_ids:
+            continue
+
+        division_name = division_name_map.get(
+            event_dict.get("division", 0),
+            f"Division {event_dict.get('division', 0)}",
+        )
+
+        if event_dict["kind"] == "status":
+            to_status = event_dict["to"]
+            if to_status == CLINCHED:
+                title, body, category, data = worldcup_clinched_push(division_name)
+            elif to_status == ELIMINATED:
+                title, body, category, data = worldcup_eliminated_push(division_name)
+            else:
+                # alive ← clinched/eliminated reversal — no push (rare,
+                # only happens on a backfill / replay; managers don't
+                # want a "JK you're alive again" alert).
+                continue
+        else:  # line crossing
+            crossed_into = event_dict["direction"] == "in"
+            title, body, category, data = worldcup_line_moved_push(division_name, crossed_into)
+
+        send_push_to_users([user_id], title, body, category, data)
+        sent += 1
+
+
+    return sent, len(transitions)
