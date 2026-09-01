@@ -264,8 +264,15 @@ jobs:
     permissions:
       id-token: write # mint the OIDC token traded for the deploy role
       contents: read
-    needs: [detect-changes, test-lambdas, deploy-layer]
-    if: always() && needs.detect-changes.outputs.has_lambda_changes == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
+    # update-all-lambdas-layer is in `needs` for sequencing, not for data: a
+    # commit touching both lambdas/common/ and one handler had both jobs call
+    # UpdateFunctionConfiguration on the same function at once, and the loser
+    # got ResourceConflictException. That left notif-lineup-not-set with new
+    # code on an old layer -- new code importing a module the layer did not
+    # have yet, which is an ImportModuleError at the next invocation, not a
+    # failed deploy anyone would notice.
+    needs: [detect-changes, test-lambdas, deploy-layer, update-all-lambdas-layer]
+    if: always() && needs.detect-changes.outputs.has_lambda_changes == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped') && (needs.update-all-lambdas-layer.result == 'success' || needs.update-all-lambdas-layer.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -373,10 +380,29 @@ jobs:
                 echo "Preserving extra layers: $EXTRA_LAYERS"
               fi
 
-              aws lambda update-function-configuration \
-                --function-name $FUNCTION_NAME \
-                --layers ${{ needs.deploy-layer.outputs.layer_arn }} $EXTRA_LAYERS \
-                --region $AWS_REGION
+              # Same retry the code update above already has. Sequencing the
+              # jobs removes the known collision; this covers a lock held by
+              # something outside this workflow, such as a terraform apply.
+              for attempt in 1 2 3; do
+                if aws lambda update-function-configuration \
+                  --function-name $FUNCTION_NAME \
+                  --layers ${{ needs.deploy-layer.outputs.layer_arn }} $EXTRA_LAYERS \
+                  --region $AWS_REGION > /tmp/cfg-$FUNCTION_NAME.log 2>&1; then
+                  break
+                fi
+                if ! grep -q "ResourceConflictException" /tmp/cfg-$FUNCTION_NAME.log; then
+                  cat /tmp/cfg-$FUNCTION_NAME.log
+                  echo "::error::Layer configuration update failed for $FUNCTION_NAME (non-retryable)"
+                  exit 1
+                fi
+                if [ "$attempt" = "3" ]; then
+                  cat /tmp/cfg-$FUNCTION_NAME.log
+                  echo "::error::Layer configuration for $FUNCTION_NAME still locked after 3 attempts"
+                  exit 1
+                fi
+                echo "ResourceConflictException on attempt $attempt — sleeping $((attempt * 10))s before retry"
+                sleep $((attempt * 10))
+              done
               echo "Waiting for configuration update to complete..."
               aws lambda wait function-updated --function-name $FUNCTION_NAME --region $AWS_REGION
             fi
