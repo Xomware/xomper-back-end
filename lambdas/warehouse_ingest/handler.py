@@ -261,6 +261,68 @@ def _write_adp(season: str) -> dict[str, Any]:
     return snapshot
 
 
+def _write_rankings(season: str, players: dict[str, Any], adp: dict[str, Any]) -> dict[str, Any]:
+    """Consensus ranks from FFC ADP, FantasyCalc and ESPN, written as one blob.
+
+    The point is not a better average. It is `spread`: a player three sources
+    rank 107, 179 and 416 is a decision the drafter should see, and any single
+    list hides that completely.
+
+    A source that fails is recorded and skipped rather than raising. Two lists
+    still beat one, and losing the night's projections because ESPN returned a
+    502 would be a bad trade.
+    """
+    by_name: dict[tuple[str, str], str] = {}
+    by_espn: dict[str, str] = {}
+    for player_id, player in players.items():
+        position = (player.get("position") or "").upper()
+        if position in VALUED_POSITIONS:
+            key = (norm_name(player.get("full_name") or player.get("last_name")), position)
+            by_name.setdefault(key, player_id)
+        if player.get("espn_id"):
+            by_espn[str(player["espn_id"])] = player_id
+
+    sources: dict[str, dict[str, int]] = {}
+    failed: dict[str, str] = {}
+
+    ppr = (adp.get("formats") or {}).get("ppr") or {}
+    if ppr.get("players"):
+        sources["ffc"] = adp_ranks(ppr["players"], by_name)
+
+    for name, call in (
+        ("fantasycalc", lambda: fantasycalc_ranks(fetch_fantasycalc(False, 1, 12, 1), by_name)),
+        ("espn", lambda: espn_ranks(fetch_espn_ranks(season), by_espn, by_name)),
+    ):
+        try:
+            ranks = call()
+        except Exception as err:  # noqa: BLE001 - recorded below, not swallowed
+            failed[name] = str(err)
+            continue
+        if ranks:
+            sources[name] = ranks
+
+    snapshot = {
+        "capturedAt": datetime.now(timezone.utc).isoformat(),
+        "season": season,
+        "sources": sorted(sources),
+        "failed": failed,
+        "players": consensus(sources),
+    }
+
+    body = json.dumps(snapshot).encode()
+    today = snapshot["capturedAt"][:10]
+    s3 = boto3.client("s3")
+    for key in ("rankings/current/rankings.json", f"rankings/snapshots/dt={today}/rankings.json"):
+        s3.put_object(
+            Bucket=WAREHOUSE_BUCKET_NAME, Key=key, Body=body, ContentType="application/json"
+        )
+
+    if failed:
+        log.warning(f"rankings: sources failed {failed}")
+    log.info(f"rankings: {len(sources)} sources, {len(snapshot['players'])} players")
+    return snapshot
+
+
 def _refresh_players(
     players: dict[str, Any], espn_by_sleeper: dict[str, dict[str, str]]
 ) -> int:
@@ -322,6 +384,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     espn_by_sleeper = _espn_ids_by_sleeper_id(season, players)
     players_written = _refresh_players(players, espn_by_sleeper)
     adp = _write_adp(season)
+    rankings = _write_rankings(season, players, adp)
 
     log.info("Warehouse ingest complete.")
     return success_response(
@@ -332,6 +395,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "espnCrosswalkSize": len(espn_by_sleeper),
             "adpFormats": sorted(adp["formats"]),
             "adpFailed": adp["failed"],
+            "rankingSources": rankings["sources"],
+            "rankingsFailed": rankings["failed"],
+            "rankedPlayers": len(rankings["players"]),
         },
         is_api=False,
     )
