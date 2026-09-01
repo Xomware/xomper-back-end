@@ -54,13 +54,19 @@ def patched(monkeypatch: pytest.MonkeyPatch):
         state["send_push_calls"].append({"user_ids": list(user_ids)})
 
     monkeypatch.setattr(h, "get_cron_setting", _get_cron_setting)
+    # The handler asks notification_audience for the work list now, rather
+    # than reading the Supabase whitelist itself.
     monkeypatch.setattr(
-        h,
-        "get_active_whitelisted_league",
-        lambda: {"league_id": "L1", "league_name": "Test"},
-    )
-    monkeypatch.setattr(
-        h, "get_active_whitelisted_users", lambda: list(state["whitelisted"])
+        h.notification_audience,
+        "jobs",
+        lambda: [
+            h.notification_audience.NotificationJob(
+                league_id="L1",
+                league_name="Test",
+                source="whitelist",
+                recipients=list(state["whitelisted"]),
+            )
+        ],
     )
     monkeypatch.setattr(
         h,
@@ -123,3 +129,97 @@ class TestDefaultPassthrough:
         }
         assert ADMIN_ID in recipients
         assert "user-1" in recipients
+
+
+class TestMultiLeague:
+    def _jobs(self, h, jobs):
+        return lambda: [h.notification_audience.NotificationJob(**j) for j in jobs]
+
+    def test_scans_every_league_it_is_given(self, patched, monkeypatch) -> None:
+        from lambdas.notif_close_game_alert import handler as h
+
+        seen = []
+        original = h.get_sleeper_league_matchups
+        monkeypatch.setattr(
+            h,
+            "get_sleeper_league_matchups",
+            lambda lid, wk: seen.append(lid) or original(lid, wk),
+        )
+        monkeypatch.setattr(
+            h.notification_audience,
+            "jobs",
+            self._jobs(h, [
+                {"league_id": "L1", "league_name": "One", "source": "whitelist",
+                 "recipients": list(patched["whitelisted"])},
+                {"league_id": "L2", "league_name": "Two", "source": "follows",
+                 "recipients": list(patched["whitelisted"])},
+            ]),
+        )
+
+        body = h.handler({}, context=None)["body"]
+
+        assert seen == ["L1", "L2"]
+        assert body["leagues"] == ["L1", "L2"]
+
+    def test_alerts_are_counted_across_leagues_not_reset(self, patched, monkeypatch) -> None:
+        from lambdas.notif_close_game_alert import handler as h
+
+        monkeypatch.setattr(
+            h.notification_audience,
+            "jobs",
+            self._jobs(h, [
+                {"league_id": "L1", "league_name": "One", "source": "whitelist",
+                 "recipients": list(patched["whitelisted"])},
+                {"league_id": "L2", "league_name": "Two", "source": "follows",
+                 "recipients": list(patched["whitelisted"])},
+            ]),
+        )
+        one = h.handler({}, context=None)["body"]["sent"]
+
+        monkeypatch.setattr(
+            h.notification_audience,
+            "jobs",
+            self._jobs(h, [
+                {"league_id": "L1", "league_name": "One", "source": "whitelist",
+                 "recipients": list(patched["whitelisted"])},
+            ]),
+        )
+        two = h.handler({}, context=None)["body"]["sent"]
+
+        # The counter is initialised outside the league loop; inside it, the
+        # total would only ever report the last league's alerts.
+        assert one == two * 2
+
+    def test_a_league_with_nobody_to_alert_costs_no_sleeper_call(
+        self, patched, monkeypatch
+    ) -> None:
+        from lambdas.notif_close_game_alert import handler as h
+
+        seen = []
+        original = h.get_sleeper_league_matchups
+        monkeypatch.setattr(
+            h,
+            "get_sleeper_league_matchups",
+            lambda lid, wk: seen.append(lid) or original(lid, wk),
+        )
+        monkeypatch.setattr(
+            h.notification_audience,
+            "jobs",
+            self._jobs(h, [
+                {"league_id": "L1", "league_name": "One", "source": "follows",
+                 "recipients": []},
+                {"league_id": "L2", "league_name": "Two", "source": "follows",
+                 "recipients": list(patched["whitelisted"])},
+            ]),
+        )
+
+        h.handler({}, context=None)
+
+        assert seen == ["L2"]
+
+    def test_no_leagues_short_circuits(self, patched, monkeypatch) -> None:
+        from lambdas.notif_close_game_alert import handler as h
+
+        monkeypatch.setattr(h.notification_audience, "jobs", lambda: [])
+
+        assert h.handler({}, context=None)["body"]["reason"] == "no league to notify"
