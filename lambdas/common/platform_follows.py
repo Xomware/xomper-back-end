@@ -156,8 +156,8 @@ def followers_of(league_id: str) -> list[str]:
     ]
 
 
-def all_followed_leagues() -> dict[str, list[str]]:
-    """Every league someone follows, mapped to its followers.
+def all_followed_leagues() -> dict[str, dict[str, Any]]:
+    """Every league someone follows, with its name and its followers.
 
     One scan rather than a query per league: a scheduled job needs the whole
     picture, and there is no key that enumerates distinct leagues. The
@@ -168,9 +168,12 @@ def all_followed_leagues() -> dict[str, list[str]]:
     follows is not in the result, so a job driven by this never pays Sleeper
     or SES for an audience of zero.
     """
-    leagues: dict[str, list[str]] = {}
+    leagues: dict[str, dict[str, Any]] = {}
     kwargs: dict[str, Any] = {
-        "ProjectionExpression": "userId, leagueId, unfollowed",
+        # `name` is denormalised onto the follow row precisely so a scheduled
+        # job can name a league without a Sleeper call per league.
+        "ProjectionExpression": "userId, leagueId, #n, unfollowed",
+        "ExpressionAttributeNames": {"#n": "name"},
     }
     try:
         while True:
@@ -180,7 +183,11 @@ def all_followed_leagues() -> dict[str, list[str]]:
                 user_id = str(item.get("userId") or "")
                 if not league_id or not user_id or item.get("unfollowed"):
                     continue
-                leagues.setdefault(league_id, []).append(user_id)
+                entry = leagues.setdefault(league_id, {"name": "", "followers": []})
+                entry["followers"].append(user_id)
+                # Any follower's copy will do, but an empty one should not
+                # win over a real name written by another follower.
+                entry["name"] = entry["name"] or str(item.get("name") or "")
             token = response.get("LastEvaluatedKey")
             if not token:
                 return leagues
